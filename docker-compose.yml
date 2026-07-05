@@ -1,0 +1,14 @@
+services:
+  camera-hub:
+    build: .
+    container_name: camera-hub
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # .env mount vao container de sua cau hinh Telegram khong can build lai
+      - ./.env:/app/.env:ro
+      # du lieu ben vung (danh sach camera)
+      - ./data:/data
+    environment:
+      - TZ=Asia/Ho_Chi_Minh

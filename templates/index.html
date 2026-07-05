@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Camera Hub</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-card: #161b22;
+    --bg-elevated: #1c2333;
+    --border: #2d333b;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #2f81f7;
+    --accent-hover: #4593f8;
+    --green: #3fb950;
+    --red: #f85149;
+    --amber: #d29922;
+    --radius: 12px;
+    --shadow: 0 8px 24px rgba(0, 0, 0, .4);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    min-height: 100vh;
+  }
+
+  /* ---------- Header ---------- */
+  header {
+    position: sticky; top: 0; z-index: 50;
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 22px;
+    background: rgba(13, 17, 23, .85);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  header .logo {
+    width: 38px; height: 38px; border-radius: 10px;
+    background: linear-gradient(135deg, #2f81f7, #8250df);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; flex-shrink: 0;
+  }
+  header h1 { font-size: 18px; font-weight: 700; }
+  header .sub { font-size: 12.5px; color: var(--text-dim); margin-top: 1px; }
+  header .spacer { flex: 1; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text);
+    padding: 9px 16px; border-radius: 9px;
+    font-size: 14px; font-weight: 600;
+    cursor: pointer;
+    transition: background .15s, border-color .15s, transform .1s;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .btn:hover { background: #232b3d; }
+  .btn:active { transform: scale(.97); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: var(--accent-hover); }
+  .btn.danger { color: var(--red); }
+  .btn.danger:hover { background: rgba(248, 81, 73, .12); border-color: var(--red); }
+  .btn.sm { padding: 6px 12px; font-size: 13px; border-radius: 8px; }
+  .btn:disabled { opacity: .55; cursor: not-allowed; }
+
+  /* ---------- Grid ---------- */
+  main { padding: 22px; max-width: 1500px; margin: 0 auto; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+    gap: 18px;
+  }
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: border-color .2s, box-shadow .2s;
+  }
+  .card:hover { border-color: #3d444d; box-shadow: var(--shadow); }
+  .card .video-wrap {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    background: #010409;
+    cursor: pointer;
+    overflow: hidden;
+  }
+  .card .video-wrap img {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .card .video-wrap .offline {
+    position: absolute; inset: 0;
+    display: none;
+    flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+    color: var(--text-dim); font-size: 13.5px;
+    background: #0b0f14;
+  }
+  .card .video-wrap.is-offline .offline { display: flex; }
+  .card .video-wrap.is-offline img { visibility: hidden; }
+  .offline .icon { font-size: 30px; opacity: .7; }
+  .live-badge {
+    position: absolute; top: 10px; left: 10px;
+    display: flex; align-items: center; gap: 6px;
+    background: rgba(0, 0, 0, .55);
+    backdrop-filter: blur(4px);
+    padding: 4px 10px; border-radius: 20px;
+    font-size: 11.5px; font-weight: 700; letter-spacing: .5px;
+  }
+  .live-badge .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--green);
+    animation: pulse 1.6s infinite;
+  }
+  .is-offline .live-badge .dot { background: var(--red); animation: none; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(63, 185, 80, .55); }
+    50% { box-shadow: 0 0 0 5px rgba(63, 185, 80, 0); }
+  }
+  .expand-hint {
+    position: absolute; right: 10px; bottom: 10px;
+    background: rgba(0, 0, 0, .55);
+    border-radius: 8px;
+    padding: 5px 8px; font-size: 13px;
+    opacity: 0; transition: opacity .2s;
+  }
+  .video-wrap:hover .expand-hint { opacity: 1; }
+  .card .info {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px;
+  }
+  .card .info .meta { flex: 1; min-width: 0; }
+  .card .info .name {
+    font-weight: 600; font-size: 14.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .card .info .host { font-size: 12.5px; color: var(--text-dim); margin-top: 2px; font-family: ui-monospace, monospace; }
+  .icon-btn {
+    border: none; background: none; color: var(--text-dim);
+    width: 34px; height: 34px; border-radius: 8px;
+    font-size: 16px; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: background .15s, color .15s;
+  }
+  .icon-btn:hover { background: var(--bg-elevated); color: var(--text); }
+  .icon-btn.danger:hover { color: var(--red); background: rgba(248, 81, 73, .12); }
+
+  /* ---------- Empty state ---------- */
+  .empty {
+    text-align: center;
+    padding: 90px 20px;
+    color: var(--text-dim);
+  }
+  .empty .big { font-size: 52px; margin-bottom: 16px; }
+  .empty h2 { color: var(--text); font-size: 20px; margin-bottom: 8px; }
+  .empty p { font-size: 14.5px; margin-bottom: 22px; line-height: 1.6; }
+
+  /* ---------- Modal ---------- */
+  .overlay {
+    position: fixed; inset: 0; z-index: 100;
+    background: rgba(1, 4, 9, .72);
+    backdrop-filter: blur(3px);
+    display: none;
+    align-items: center; justify-content: center;
+    padding: 18px;
+  }
+  .overlay.open { display: flex; }
+  .modal {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    width: 100%; max-width: 460px;
+    max-height: 92vh; overflow-y: auto;
+    box-shadow: var(--shadow);
+    animation: rise .18s ease-out;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+  .modal .m-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .modal .m-head h2 { font-size: 16.5px; }
+  .modal .m-body { padding: 20px; }
+  .field { margin-bottom: 15px; }
+  .field label { display: block; font-size: 13px; font-weight: 600; color: var(--text-dim); margin-bottom: 6px; }
+  .field input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    color: var(--text);
+    padding: 10px 12px;
+    font-size: 14.5px;
+    transition: border-color .15s;
+  }
+  .field input:focus { outline: none; border-color: var(--accent); }
+  .field .hint { font-size: 12px; color: var(--text-dim); margin-top: 5px; line-height: 1.5; }
+  details.advanced { margin: 4px 0 16px; }
+  details.advanced summary {
+    cursor: pointer; font-size: 13px; color: var(--text-dim);
+    user-select: none; font-weight: 600;
+  }
+  details.advanced[open] summary { margin-bottom: 12px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .test-result {
+    display: none;
+    margin-bottom: 15px;
+    padding: 10px 13px;
+    border-radius: 9px;
+    font-size: 13.5px;
+    line-height: 1.5;
+  }
+  .test-result.ok { display: block; background: rgba(63, 185, 80, .12); border: 1px solid rgba(63, 185, 80, .4); color: #7ee787; }
+  .test-result.err { display: block; background: rgba(248, 81, 73, .12); border: 1px solid rgba(248, 81, 73, .4); color: #ffa198; }
+  .m-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px; }
+
+  /* ---------- Fullscreen viewer ---------- */
+  .viewer {
+    position: fixed; inset: 0; z-index: 200;
+    background: #010409;
+    display: none;
+    flex-direction: column;
+  }
+  .viewer.open { display: flex; }
+  .viewer .v-head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 18px;
+    background: rgba(13, 17, 23, .9);
+    border-bottom: 1px solid var(--border);
+  }
+  .viewer .v-head .name { font-weight: 700; font-size: 15.5px; }
+  .viewer .v-head .host { font-size: 12.5px; color: var(--text-dim); font-family: ui-monospace, monospace; }
+  .viewer .v-body {
+    flex: 1;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+    position: relative;
+  }
+  .viewer .v-body img { max-width: 100%; max-height: 100%; }
+  .viewer .v-loading {
+    position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: rgba(0, 0, 0, .65);
+    border: 1px solid var(--border);
+    padding: 8px 16px; border-radius: 20px;
+    font-size: 13px; color: var(--text-dim);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .viewer .v-offline {
+    position: absolute; inset: 0;
+    display: none;
+    flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    color: var(--text-dim);
+  }
+  .viewer.is-offline .v-offline { display: flex; }
+  .viewer.is-offline .v-body img { display: none; }
+
+  /* ---------- Toast ---------- */
+  #toasts {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    z-index: 300;
+    display: flex; flex-direction: column; gap: 8px;
+    align-items: center;
+  }
+  .toast {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 11px 18px;
+    font-size: 14px;
+    box-shadow: var(--shadow);
+    animation: rise .2s ease-out;
+    max-width: 90vw;
+  }
+  .toast.ok { border-color: rgba(63, 185, 80, .5); }
+  .toast.err { border-color: rgba(248, 81, 73, .5); }
+
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid rgba(255, 255, 255, .25);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  @media (max-width: 560px) {
+    main { padding: 14px; }
+    .grid { grid-template-columns: 1fr; gap: 14px; }
+    header { padding: 12px 14px; }
+    header .sub { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">&#128249;</div>
+  <div>
+    <h1>Camera Hub</h1>
+    <div class="sub" id="headerSub">Đang tải...</div>
+  </div>
+  <div class="spacer"></div>
+  <button class="btn" id="btnEco" onclick="toggleEco()" title="Bật: lưới xem 2 hình/giây (nhẹ mạng) • Tắt: 5 hình/giây">&#127811; Tiết kiệm</button>
+  <button class="btn" id="btnTg" onclick="sendTelegramNow()" title="Gửi ảnh + video của tất cả camera vào nhóm Telegram ngay">&#128228; Gửi Telegram</button>
+  <button class="btn primary" onclick="openAdd()">
+    <span style="font-size:17px;line-height:1">+</span> Thêm camera
+  </button>
+</header>
+
+<main>
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty" style="display:none">
+    <div class="big">&#128247;</div>
+    <h2>Chưa có camera nào</h2>
+    <p>Thêm camera đầu tiên của bạn — chỉ cần nhập địa chỉ IP và mật khẩu.<br>
+    Hỗ trợ camera Hikvision / EZVIZ và các camera dùng chuẩn RTSP tương tự.</p>
+    <button class="btn primary" onclick="openAdd()">+ Thêm camera ngay</button>
+  </div>
+</main>
+
+<!-- Modal thêm / sửa camera -->
+<div class="overlay" id="camModal">
+  <div class="modal">
+    <div class="m-head">
+      <h2 id="modalTitle">Thêm camera</h2>
+      <button class="icon-btn" onclick="closeModal()">&#10005;</button>
+    </div>
+    <div class="m-body">
+      <div class="field">
+        <label>Tên camera</label>
+        <input type="text" id="f_name" placeholder="VD: Camera quán ăn" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>Địa chỉ IP *</label>
+        <input type="text" id="f_host" placeholder="VD: 192.168.1.8" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>Mật khẩu (pass security) *</label>
+        <input type="password" id="f_password" placeholder="Mật khẩu in trên tem camera" autocomplete="new-password">
+        <div class="hint" id="passHint">Camera sẽ được kết nối theo dạng:
+        <code>rtsp://admin:MẬT_KHẨU@IP:554/Streaming/Channels/101</code></div>
+      </div>
+      <details class="advanced">
+        <summary>Cài đặt nâng cao (không bắt buộc)</summary>
+        <div class="row2">
+          <div class="field">
+            <label>Tài khoản</label>
+            <input type="text" id="f_username" placeholder="admin">
+          </div>
+          <div class="field">
+            <label>Cổng RTSP</label>
+            <input type="number" id="f_port" placeholder="554">
+          </div>
+        </div>
+        <div class="field">
+          <label>Đường dẫn luồng chính</label>
+          <input type="text" id="f_path_main" placeholder="/Streaming/Channels/101">
+        </div>
+        <div class="field">
+          <label>Đường dẫn luồng phụ (xem lưới)</label>
+          <input type="text" id="f_path_sub" placeholder="/Streaming/Channels/102">
+        </div>
+      </details>
+      <div class="test-result" id="testResult"></div>
+      <div class="m-actions">
+        <button class="btn" id="btnTest" onclick="testConnection()">Kiểm tra kết nối</button>
+        <button class="btn primary" id="btnSave" onclick="saveCamera()">Lưu camera</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Xem toàn màn hình -->
+<div class="viewer" id="viewer">
+  <div class="v-head">
+    <div style="flex:1;min-width:0">
+      <div class="name" id="v_name"></div>
+      <div class="host" id="v_host"></div>
+    </div>
+    <button class="btn sm" onclick="downloadSnapshot()">&#128248; Chụp ảnh</button>
+    <button class="btn sm" onclick="closeViewer()">&#10005; Đóng</button>
+  </div>
+  <div class="v-body">
+    <img id="v_img_sub" alt="">
+    <img id="v_img" alt="" style="display:none">
+    <div class="v-loading" id="v_loading" style="display:none">
+      <span class="spinner"></span> Đang tải bản nét cao...
+    </div>
+    <div class="v-offline">
+      <div style="font-size:34px">&#128683;</div>
+      <div>Mất kết nối camera — đang thử lại...</div>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+'use strict';
+
+// Ghép URL tương đối theo path hiện tại — hoạt động cả khi chạy sau
+// Home Assistant Ingress (/api/hassio_ingress/<token>/...) lẫn cổng trực tiếp.
+function apiPath(path) {
+  let base = window.location.pathname;
+  if (!base.endsWith('/')) base += '/';
+  return base + path.replace(/^\//, '');
+}
+
+let cameras = [];
+let editingId = null;   // null = đang thêm mới
+let viewerCamId = null;
+const retryTimers = {};
+
+// Chế độ tiết kiệm băng thông: lưới xem 2 hình/giây thay vì 5
+let ecoMode = localStorage.getItem('ecoMode') === '1';
+function gridFps() { return ecoMode ? 2 : 5; }
+function updateEcoBtn() {
+  const b = document.getElementById('btnEco');
+  b.style.borderColor = ecoMode ? 'var(--green)' : '';
+  b.style.color = ecoMode ? 'var(--green)' : '';
+  b.innerHTML = ecoMode ? '&#127811; Tiết kiệm: BẬT' : '&#127811; Tiết kiệm';
+}
+function toggleEco() {
+  ecoMode = !ecoMode;
+  localStorage.setItem('ecoMode', ecoMode ? '1' : '0');
+  updateEcoBtn();
+  cameras.forEach(c => startPreview(c.id));
+  toast(ecoMode ? 'Tiết kiệm băng thông: lưới xem 2 hình/giây' : 'Đã tắt tiết kiệm: lưới xem 5 hình/giây', 'ok');
+}
+
+// ---------------- Toast ----------------
+function toast(msg, type) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + (type || '');
+  el.textContent = msg;
+  document.getElementById('toasts').appendChild(el);
+  setTimeout(() => el.remove(), 3800);
+}
+
+// ---------------- Tải danh sách ----------------
+async function loadCameras() {
+  try {
+    const res = await fetch(apiPath('api/cameras'));
+    const data = await res.json();
+    cameras = data.cameras || [];
+  } catch (e) {
+    toast('Không tải được danh sách camera', 'err');
+    cameras = [];
+  }
+  renderGrid();
+}
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function renderGrid() {
+  const grid = document.getElementById('grid');
+  const empty = document.getElementById('empty');
+  const sub = document.getElementById('headerSub');
+
+  Object.values(retryTimers).forEach(clearTimeout);
+  for (const k in retryTimers) delete retryTimers[k];
+
+  sub.textContent = cameras.length
+    ? cameras.length + ' camera'
+    : 'Xem camera RTSP trực tiếp trên web';
+
+  if (!cameras.length) {
+    grid.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  grid.innerHTML = cameras.map(c => `
+    <div class="card" data-id="${c.id}">
+      <div class="video-wrap" onclick="openViewer('${c.id}')">
+        <img alt="${esc(c.name)}"
+             onerror="markOffline('${c.id}')"
+             onload="markOnline('${c.id}')">
+        <div class="live-badge"><span class="dot"></span><span class="badge-label">LIVE</span></div>
+        <div class="offline">
+          <div class="icon">&#128683;</div>
+          <div>Mất kết nối — tự thử lại sau vài giây</div>
+        </div>
+        <div class="expand-hint">&#x26F6; Phóng to</div>
+      </div>
+      <div class="info">
+        <div class="meta">
+          <div class="name">${esc(c.name)}</div>
+          <div class="host">${esc(c.host)}:${esc(c.port)}</div>
+        </div>
+        <button class="icon-btn" title="Sửa" onclick="openEdit('${c.id}')">&#9998;</button>
+        <button class="icon-btn danger" title="Xóa" onclick="deleteCamera('${c.id}')">&#128465;</button>
+      </div>
+    </div>
+  `).join('');
+
+  // Gán src sau khi render để onerror luôn được bắt
+  cameras.forEach(c => startPreview(c.id));
+}
+
+function cardEls(id) {
+  const card = document.querySelector(`.card[data-id="${id}"]`);
+  if (!card) return null;
+  return { wrap: card.querySelector('.video-wrap'), img: card.querySelector('img'),
+           label: card.querySelector('.badge-label') };
+}
+
+function startPreview(id) {
+  const els = cardEls(id);
+  if (!els) return;
+  els.img.src = apiPath('stream/' + id + '?src=sub&fps=' + gridFps()) + '&_=' + Date.now();
+}
+
+function stopPreview(id) {
+  clearTimeout(retryTimers[id]);
+  const els = cardEls(id);
+  if (els) els.img.removeAttribute('src');
+}
+
+function markOffline(id) {
+  const els = cardEls(id);
+  if (!els || !els.img.getAttribute('src')) return;
+  els.wrap.classList.add('is-offline');
+  els.label.textContent = 'MẤT KẾT NỐI';
+  clearTimeout(retryTimers[id]);
+  retryTimers[id] = setTimeout(() => startPreview(id), 8000);
+}
+
+function markOnline(id) {
+  const els = cardEls(id);
+  if (!els) return;
+  els.wrap.classList.remove('is-offline');
+  els.label.textContent = 'LIVE';
+}
+
+// ---------------- Modal thêm / sửa ----------------
+function openAdd() {
+  editingId = null;
+  document.getElementById('modalTitle').textContent = 'Thêm camera';
+  ['f_name', 'f_host', 'f_password', 'f_username', 'f_port', 'f_path_main', 'f_path_sub']
+    .forEach(fid => document.getElementById(fid).value = '');
+  document.getElementById('f_password').placeholder = 'Mật khẩu in trên tem camera';
+  resetTestResult();
+  document.getElementById('camModal').classList.add('open');
+  setTimeout(() => document.getElementById('f_host').focus(), 60);
+}
+
+function openEdit(id) {
+  const c = cameras.find(x => x.id === id);
+  if (!c) return;
+  editingId = id;
+  document.getElementById('modalTitle').textContent = 'Sửa camera';
+  document.getElementById('f_name').value = c.name || '';
+  document.getElementById('f_host').value = c.host || '';
+  document.getElementById('f_password').value = '';
+  document.getElementById('f_password').placeholder = 'Bỏ trống nếu giữ mật khẩu cũ';
+  document.getElementById('f_username').value = c.username || '';
+  document.getElementById('f_port').value = c.port || '';
+  document.getElementById('f_path_main').value = c.path_main || '';
+  document.getElementById('f_path_sub').value = c.path_sub || '';
+  resetTestResult();
+  document.getElementById('camModal').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('camModal').classList.remove('open');
+}
+
+function resetTestResult() {
+  const el = document.getElementById('testResult');
+  el.className = 'test-result';
+  el.textContent = '';
+}
+
+function formPayload() {
+  return {
+    id: editingId || undefined,
+    name: document.getElementById('f_name').value.trim(),
+    host: document.getElementById('f_host').value.trim(),
+    password: document.getElementById('f_password').value,
+    username: document.getElementById('f_username').value.trim(),
+    port: document.getElementById('f_port').value.trim(),
+    path_main: document.getElementById('f_path_main').value.trim(),
+    path_sub: document.getElementById('f_path_sub').value.trim(),
+  };
+}
+
+async function testConnection() {
+  const btn = document.getElementById('btnTest');
+  const out = document.getElementById('testResult');
+  resetTestResult();
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Đang kiểm tra...';
+  try {
+    const res = await fetch(apiPath('api/test'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(formPayload()),
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      const i = data.info || {};
+      out.className = 'test-result ok';
+      out.textContent = `✓ Kết nối thành công — ${(i.codec || '?').toUpperCase()} ${i.width}×${i.height}` +
+        (i.fps ? ` @ ${i.fps}fps` : '');
+    } else {
+      out.className = 'test-result err';
+      out.textContent = '✗ ' + (data.error || 'Không kết nối được camera');
+    }
+  } catch (e) {
+    out.className = 'test-result err';
+    out.textContent = '✗ Lỗi mạng khi kiểm tra kết nối';
+  }
+  btn.disabled = false;
+  btn.textContent = 'Kiểm tra kết nối';
+}
+
+async function saveCamera() {
+  const btn = document.getElementById('btnSave');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Đang lưu...';
+  try {
+    const url = editingId ? apiPath('api/cameras/' + editingId) : apiPath('api/cameras');
+    const res = await fetch(url, {
+      method: editingId ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(formPayload()),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      closeModal();
+      toast(editingId ? 'Đã cập nhật camera' : 'Đã thêm camera mới', 'ok');
+      await loadCameras();
+    } else {
+      const out = document.getElementById('testResult');
+      out.className = 'test-result err';
+      out.textContent = '✗ ' + (data.error || 'Không lưu được camera');
+    }
+  } catch (e) {
+    toast('Lỗi mạng khi lưu camera', 'err');
+  }
+  btn.disabled = false;
+  btn.textContent = 'Lưu camera';
+}
+
+async function deleteCamera(id) {
+  const c = cameras.find(x => x.id === id);
+  if (!c) return;
+  if (!confirm(`Xóa camera "${c.name}"?`)) return;
+  try {
+    const res = await fetch(apiPath('api/cameras/' + id), { method: 'DELETE' });
+    if (res.ok) {
+      toast('Đã xóa camera', 'ok');
+      await loadCameras();
+    } else {
+      toast('Không xóa được camera', 'err');
+    }
+  } catch (e) {
+    toast('Lỗi mạng khi xóa camera', 'err');
+  }
+}
+
+// ---------------- Fullscreen viewer ----------------
+let viewerRetry = null;
+
+function openViewer(id) {
+  const c = cameras.find(x => x.id === id);
+  if (!c) return;
+  viewerCamId = id;
+  document.getElementById('v_name').textContent = c.name;
+  document.getElementById('v_host').textContent = c.host + ':' + c.port;
+  const v = document.getElementById('viewer');
+  v.classList.remove('is-offline');
+  v.classList.add('open');
+
+  // Tạm dừng toàn bộ lưới phía sau: trình duyệt giới hạn 6 kết nối đồng thời
+  // tới 1 máy chủ — nếu không nhả ra thì luồng của viewer bị xếp hàng chờ mãi
+  cameras.forEach(c => stopPreview(c.id));
+
+  // Hiện NGAY bằng luồng phụ (kết nối nhanh), đồng thời tải luồng chính ngầm —
+  // xong thì tự chuyển sang bản nét cao.
+  const sub = document.getElementById('v_img_sub');
+  const main = document.getElementById('v_img');
+  main.style.display = 'none';
+  sub.style.display = '';
+  sub.onerror = () => { if (viewerCamId) v.classList.add('is-offline'); };
+  sub.onload = () => v.classList.remove('is-offline');
+  sub.src = apiPath('stream/' + id + '?src=sub&fps=' + gridFps()) + '&_=' + Date.now();
+  document.getElementById('v_loading').style.display = '';
+  startViewerStream();
+}
+
+function startViewerStream() {
+  if (!viewerCamId) return;
+  const img = document.getElementById('v_img');
+  img.onerror = () => {
+    // Luồng chính chưa lên được: giữ luồng phụ hiển thị, âm thầm thử lại
+    clearTimeout(viewerRetry);
+    viewerRetry = setTimeout(startViewerStream, 6000);
+  };
+  img.onload = () => {
+    // Bản nét cao đã sẵn sàng -> chuyển hiển thị, ngắt luồng phụ
+    const v = document.getElementById('viewer');
+    v.classList.remove('is-offline');
+    img.style.display = '';
+    const sub = document.getElementById('v_img_sub');
+    sub.style.display = 'none';
+    sub.onerror = null;
+    sub.removeAttribute('src');
+    document.getElementById('v_loading').style.display = 'none';
+  };
+  img.src = apiPath('stream/' + viewerCamId + '?src=main') + '&_=' + Date.now();
+}
+
+function stopViewerStreams() {
+  clearTimeout(viewerRetry);
+  for (const eid of ['v_img', 'v_img_sub']) {
+    const img = document.getElementById(eid);
+    img.onerror = null;
+    img.onload = null;
+    img.removeAttribute('src');
+  }
+  document.getElementById('v_loading').style.display = 'none';
+}
+
+function closeViewer() {
+  stopViewerStreams();
+  viewerCamId = null;
+  document.getElementById('viewer').classList.remove('open');
+  // Mở lại lưới xem
+  cameras.forEach(c => startPreview(c.id));
+}
+
+function downloadSnapshot() {
+  if (!viewerCamId) return;
+  const a = document.createElement('a');
+  a.href = apiPath('snapshot/' + viewerCamId + '?download=1&_=' + Date.now());
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  toast('Đang tải ảnh chụp...', 'ok');
+}
+
+// ---------------- Gửi Telegram thủ công ----------------
+async function sendTelegramNow() {
+  const btn = document.getElementById('btnTg');
+  const old = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Đang gửi...';
+  try {
+    const res = await fetch(apiPath('api/telegram/send-now'), { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      toast('Đã gửi ảnh + video lên nhóm Telegram', 'ok');
+    } else if (data.results && data.results.length) {
+      const bad = data.results.find(r => !r.ok);
+      toast('Lỗi gửi Telegram: ' + (bad ? bad.error : '?'), 'err');
+    } else {
+      toast(data.error || 'Không gửi được Telegram', 'err');
+    }
+  } catch (e) {
+    toast('Lỗi mạng khi gửi Telegram', 'err');
+  }
+  btn.disabled = false;
+  btn.innerHTML = old;
+}
+
+// ---------------- Tạm dừng stream khi ẩn tab (tiết kiệm băng thông) ----------------
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    cameras.forEach(c => stopPreview(c.id));
+    if (viewerCamId) stopViewerStreams();
+  } else if (viewerCamId) {
+    openViewer(viewerCamId);   // viewer đang mở: chỉ nối lại viewer, lưới vẫn dừng
+  } else {
+    cameras.forEach(c => startPreview(c.id));
+  }
+});
+
+// ---------------- Phím tắt & khởi động ----------------
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    if (document.getElementById('viewer').classList.contains('open')) closeViewer();
+    else closeModal();
+  }
+});
+document.getElementById('camModal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeModal();
+});
+
+updateEcoBtn();
+loadCameras();
+</script>
+</body>
+</html>

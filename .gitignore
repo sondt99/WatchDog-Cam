@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.env
+
+# Du lieu runtime (chua mat khau camera that, model YOLO tai ve...) - khong commit
+data/
+
+# Trang thai cuc bo cua Claude Code, khong lien quan code du an
+.claude/

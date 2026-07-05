@@ -1,0 +1,10 @@
+.env
+.env.example
+cameras.json
+data/
+__pycache__/
+*.pyc
+.git/
+AI_FEATURES_NOTES.txt
+README.md
+docker-compose.yml
