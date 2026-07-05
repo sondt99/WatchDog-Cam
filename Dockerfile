@@ -4,15 +4,15 @@ FROM ${BUILD_FROM}
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# libgl1/libglib2.0-0: can cho opencv-python-headless chay duoc tren Debian slim
+# libgl1/libglib2.0-0: required for opencv-python-headless to run on Debian slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Cai ban CPU-only cua torch truoc (nhe hon nhieu GB so voi ban CUDA mac dinh
-# tren PyPI) de ultralytics ben duoi tan dung lai, khong tai ban CUDA nua
+# Install the CPU-only build of torch first (many GB lighter than the default
+# CUDA build on PyPI) so ultralytics below reuses it instead of downloading the CUDA build
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 COPY requirements.txt .

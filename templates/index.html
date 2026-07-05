@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -304,13 +304,13 @@
   <div class="logo">&#128249;</div>
   <div>
     <h1>Camera Hub</h1>
-    <div class="sub" id="headerSub">Đang tải...</div>
+    <div class="sub" id="headerSub">Loading...</div>
   </div>
   <div class="spacer"></div>
-  <button class="btn" id="btnEco" onclick="toggleEco()" title="Bật: lưới xem 2 hình/giây (nhẹ mạng) • Tắt: 5 hình/giây">&#127811; Tiết kiệm</button>
-  <button class="btn" id="btnTg" onclick="sendTelegramNow()" title="Gửi ảnh + video của tất cả camera vào nhóm Telegram ngay">&#128228; Gửi Telegram</button>
+  <button class="btn" id="btnEco" onclick="toggleEco()" title="On: grid view at 2 frames/sec (lighter on network) • Off: 5 frames/sec">&#127811; Eco</button>
+  <button class="btn" id="btnTg" onclick="sendTelegramNow()" title="Send photo + video from all cameras to the Telegram group now">&#128228; Send Telegram</button>
   <button class="btn primary" onclick="openAdd()">
-    <span style="font-size:17px;line-height:1">+</span> Thêm camera
+    <span style="font-size:17px;line-height:1">+</span> Add Camera
   </button>
 </header>
 
@@ -318,84 +318,84 @@
   <div class="grid" id="grid"></div>
   <div class="empty" id="empty" style="display:none">
     <div class="big">&#128247;</div>
-    <h2>Chưa có camera nào</h2>
-    <p>Thêm camera đầu tiên của bạn — chỉ cần nhập địa chỉ IP và mật khẩu.<br>
-    Hỗ trợ camera Hikvision / EZVIZ và các camera dùng chuẩn RTSP tương tự.</p>
-    <button class="btn primary" onclick="openAdd()">+ Thêm camera ngay</button>
+    <h2>No cameras yet</h2>
+    <p>Add your first camera — just enter the IP address and password.<br>
+    Supports Hikvision / EZVIZ cameras and other cameras using a similar RTSP standard.</p>
+    <button class="btn primary" onclick="openAdd()">+ Add a camera now</button>
   </div>
 </main>
 
-<!-- Modal thêm / sửa camera -->
+<!-- Add/Edit camera modal -->
 <div class="overlay" id="camModal">
   <div class="modal">
     <div class="m-head">
-      <h2 id="modalTitle">Thêm camera</h2>
+      <h2 id="modalTitle">Add Camera</h2>
       <button class="icon-btn" onclick="closeModal()">&#10005;</button>
     </div>
     <div class="m-body">
       <div class="field">
-        <label>Tên camera</label>
-        <input type="text" id="f_name" placeholder="VD: Camera quán ăn" autocomplete="off">
+        <label>Camera name</label>
+        <input type="text" id="f_name" placeholder="E.g.: Restaurant camera" autocomplete="off">
       </div>
       <div class="field">
-        <label>Địa chỉ IP *</label>
-        <input type="text" id="f_host" placeholder="VD: 192.168.1.8" autocomplete="off">
+        <label>IP address *</label>
+        <input type="text" id="f_host" placeholder="E.g.: 192.168.1.8" autocomplete="off">
       </div>
       <div class="field">
-        <label>Mật khẩu (pass security) *</label>
-        <input type="password" id="f_password" placeholder="Mật khẩu in trên tem camera" autocomplete="new-password">
-        <div class="hint" id="passHint">Camera sẽ được kết nối theo dạng:
-        <code>rtsp://admin:MẬT_KHẨU@IP:554/Streaming/Channels/101</code></div>
+        <label>Password (security code) *</label>
+        <input type="password" id="f_password" placeholder="Password printed on the camera label" autocomplete="new-password">
+        <div class="hint" id="passHint">The camera will be connected using this format:
+        <code>rtsp://admin:PASSWORD@IP:554/Streaming/Channels/101</code></div>
       </div>
       <details class="advanced">
-        <summary>Cài đặt nâng cao (không bắt buộc)</summary>
+        <summary>Advanced settings (optional)</summary>
         <div class="row2">
           <div class="field">
-            <label>Tài khoản</label>
+            <label>Username</label>
             <input type="text" id="f_username" placeholder="admin">
           </div>
           <div class="field">
-            <label>Cổng RTSP</label>
+            <label>RTSP port</label>
             <input type="number" id="f_port" placeholder="554">
           </div>
         </div>
         <div class="field">
-          <label>Đường dẫn luồng chính</label>
+          <label>Main stream path</label>
           <input type="text" id="f_path_main" placeholder="/Streaming/Channels/101">
         </div>
         <div class="field">
-          <label>Đường dẫn luồng phụ (xem lưới)</label>
+          <label>Sub stream path (grid view)</label>
           <input type="text" id="f_path_sub" placeholder="/Streaming/Channels/102">
         </div>
       </details>
       <div class="test-result" id="testResult"></div>
       <div class="m-actions">
-        <button class="btn" id="btnTest" onclick="testConnection()">Kiểm tra kết nối</button>
-        <button class="btn primary" id="btnSave" onclick="saveCamera()">Lưu camera</button>
+        <button class="btn" id="btnTest" onclick="testConnection()">Test connection</button>
+        <button class="btn primary" id="btnSave" onclick="saveCamera()">Save camera</button>
       </div>
     </div>
   </div>
 </div>
 
-<!-- Xem toàn màn hình -->
+<!-- Fullscreen viewer -->
 <div class="viewer" id="viewer">
   <div class="v-head">
     <div style="flex:1;min-width:0">
       <div class="name" id="v_name"></div>
       <div class="host" id="v_host"></div>
     </div>
-    <button class="btn sm" onclick="downloadSnapshot()">&#128248; Chụp ảnh</button>
-    <button class="btn sm" onclick="closeViewer()">&#10005; Đóng</button>
+    <button class="btn sm" onclick="downloadSnapshot()">&#128248; Snapshot</button>
+    <button class="btn sm" onclick="closeViewer()">&#10005; Close</button>
   </div>
   <div class="v-body">
     <img id="v_img_sub" alt="">
     <img id="v_img" alt="" style="display:none">
     <div class="v-loading" id="v_loading" style="display:none">
-      <span class="spinner"></span> Đang tải bản nét cao...
+      <span class="spinner"></span> Loading high-res stream...
     </div>
     <div class="v-offline">
       <div style="font-size:34px">&#128683;</div>
-      <div>Mất kết nối camera — đang thử lại...</div>
+      <div>Camera connection lost — retrying...</div>
     </div>
   </div>
 </div>
@@ -405,8 +405,8 @@
 <script>
 'use strict';
 
-// Ghép URL tương đối theo path hiện tại — hoạt động cả khi chạy sau
-// Home Assistant Ingress (/api/hassio_ingress/<token>/...) lẫn cổng trực tiếp.
+// Build a relative URL based on the current path — works both behind
+// Home Assistant Ingress (/api/hassio_ingress/<token>/...) and on a direct port.
 function apiPath(path) {
   let base = window.location.pathname;
   if (!base.endsWith('/')) base += '/';
@@ -414,25 +414,25 @@ function apiPath(path) {
 }
 
 let cameras = [];
-let editingId = null;   // null = đang thêm mới
+let editingId = null;   // null = currently adding a new camera
 let viewerCamId = null;
 const retryTimers = {};
 
-// Chế độ tiết kiệm băng thông: lưới xem 2 hình/giây thay vì 5
+// Bandwidth-saving mode: grid view at 2 frames/sec instead of 5
 let ecoMode = localStorage.getItem('ecoMode') === '1';
 function gridFps() { return ecoMode ? 2 : 5; }
 function updateEcoBtn() {
   const b = document.getElementById('btnEco');
   b.style.borderColor = ecoMode ? 'var(--green)' : '';
   b.style.color = ecoMode ? 'var(--green)' : '';
-  b.innerHTML = ecoMode ? '&#127811; Tiết kiệm: BẬT' : '&#127811; Tiết kiệm';
+  b.innerHTML = ecoMode ? '&#127811; Eco: ON' : '&#127811; Eco';
 }
 function toggleEco() {
   ecoMode = !ecoMode;
   localStorage.setItem('ecoMode', ecoMode ? '1' : '0');
   updateEcoBtn();
   cameras.forEach(c => startPreview(c.id));
-  toast(ecoMode ? 'Tiết kiệm băng thông: lưới xem 2 hình/giây' : 'Đã tắt tiết kiệm: lưới xem 5 hình/giây', 'ok');
+  toast(ecoMode ? 'Bandwidth saving on: grid view at 2 frames/sec' : 'Bandwidth saving off: grid view at 5 frames/sec', 'ok');
 }
 
 // ---------------- Toast ----------------
@@ -444,14 +444,14 @@ function toast(msg, type) {
   setTimeout(() => el.remove(), 3800);
 }
 
-// ---------------- Tải danh sách ----------------
+// ---------------- Load list ----------------
 async function loadCameras() {
   try {
     const res = await fetch(apiPath('api/cameras'));
     const data = await res.json();
     cameras = data.cameras || [];
   } catch (e) {
-    toast('Không tải được danh sách camera', 'err');
+    toast('Could not load camera list', 'err');
     cameras = [];
   }
   renderGrid();
@@ -473,7 +473,7 @@ function renderGrid() {
 
   sub.textContent = cameras.length
     ? cameras.length + ' camera'
-    : 'Xem camera RTSP trực tiếp trên web';
+    : 'View RTSP cameras live on the web';
 
   if (!cameras.length) {
     grid.innerHTML = '';
@@ -491,22 +491,22 @@ function renderGrid() {
         <div class="live-badge"><span class="dot"></span><span class="badge-label">LIVE</span></div>
         <div class="offline">
           <div class="icon">&#128683;</div>
-          <div>Mất kết nối — tự thử lại sau vài giây</div>
+          <div>Connection lost — retrying automatically in a few seconds</div>
         </div>
-        <div class="expand-hint">&#x26F6; Phóng to</div>
+        <div class="expand-hint">&#x26F6; Expand</div>
       </div>
       <div class="info">
         <div class="meta">
           <div class="name">${esc(c.name)}</div>
           <div class="host">${esc(c.host)}:${esc(c.port)}</div>
         </div>
-        <button class="icon-btn" title="Sửa" onclick="openEdit('${c.id}')">&#9998;</button>
-        <button class="icon-btn danger" title="Xóa" onclick="deleteCamera('${c.id}')">&#128465;</button>
+        <button class="icon-btn" title="Edit" onclick="openEdit('${c.id}')">&#9998;</button>
+        <button class="icon-btn danger" title="Delete" onclick="deleteCamera('${c.id}')">&#128465;</button>
       </div>
     </div>
   `).join('');
 
-  // Gán src sau khi render để onerror luôn được bắt
+  // Assign src after rendering so onerror is always caught
   cameras.forEach(c => startPreview(c.id));
 }
 
@@ -533,7 +533,7 @@ function markOffline(id) {
   const els = cardEls(id);
   if (!els || !els.img.getAttribute('src')) return;
   els.wrap.classList.add('is-offline');
-  els.label.textContent = 'MẤT KẾT NỐI';
+  els.label.textContent = 'OFFLINE';
   clearTimeout(retryTimers[id]);
   retryTimers[id] = setTimeout(() => startPreview(id), 8000);
 }
@@ -545,13 +545,13 @@ function markOnline(id) {
   els.label.textContent = 'LIVE';
 }
 
-// ---------------- Modal thêm / sửa ----------------
+// ---------------- Add/Edit modal ----------------
 function openAdd() {
   editingId = null;
-  document.getElementById('modalTitle').textContent = 'Thêm camera';
+  document.getElementById('modalTitle').textContent = 'Add Camera';
   ['f_name', 'f_host', 'f_password', 'f_username', 'f_port', 'f_path_main', 'f_path_sub']
     .forEach(fid => document.getElementById(fid).value = '');
-  document.getElementById('f_password').placeholder = 'Mật khẩu in trên tem camera';
+  document.getElementById('f_password').placeholder = 'Password printed on the camera label';
   resetTestResult();
   document.getElementById('camModal').classList.add('open');
   setTimeout(() => document.getElementById('f_host').focus(), 60);
@@ -561,11 +561,11 @@ function openEdit(id) {
   const c = cameras.find(x => x.id === id);
   if (!c) return;
   editingId = id;
-  document.getElementById('modalTitle').textContent = 'Sửa camera';
+  document.getElementById('modalTitle').textContent = 'Edit Camera';
   document.getElementById('f_name').value = c.name || '';
   document.getElementById('f_host').value = c.host || '';
   document.getElementById('f_password').value = '';
-  document.getElementById('f_password').placeholder = 'Bỏ trống nếu giữ mật khẩu cũ';
+  document.getElementById('f_password').placeholder = 'Leave blank to keep the old password';
   document.getElementById('f_username').value = c.username || '';
   document.getElementById('f_port').value = c.port || '';
   document.getElementById('f_path_main').value = c.path_main || '';
@@ -602,7 +602,7 @@ async function testConnection() {
   const out = document.getElementById('testResult');
   resetTestResult();
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Đang kiểm tra...';
+  btn.innerHTML = '<span class="spinner"></span> Testing...';
   try {
     const res = await fetch(apiPath('api/test'), {
       method: 'POST',
@@ -613,24 +613,24 @@ async function testConnection() {
     if (res.ok && data.ok) {
       const i = data.info || {};
       out.className = 'test-result ok';
-      out.textContent = `✓ Kết nối thành công — ${(i.codec || '?').toUpperCase()} ${i.width}×${i.height}` +
+      out.textContent = `✓ Connected successfully — ${(i.codec || '?').toUpperCase()} ${i.width}×${i.height}` +
         (i.fps ? ` @ ${i.fps}fps` : '');
     } else {
       out.className = 'test-result err';
-      out.textContent = '✗ ' + (data.error || 'Không kết nối được camera');
+      out.textContent = '✗ ' + (data.error || 'Could not connect to camera');
     }
   } catch (e) {
     out.className = 'test-result err';
-    out.textContent = '✗ Lỗi mạng khi kiểm tra kết nối';
+    out.textContent = '✗ Network error while testing connection';
   }
   btn.disabled = false;
-  btn.textContent = 'Kiểm tra kết nối';
+  btn.textContent = 'Test connection';
 }
 
 async function saveCamera() {
   const btn = document.getElementById('btnSave');
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Đang lưu...';
+  btn.innerHTML = '<span class="spinner"></span> Saving...';
   try {
     const url = editingId ? apiPath('api/cameras/' + editingId) : apiPath('api/cameras');
     const res = await fetch(url, {
@@ -641,34 +641,34 @@ async function saveCamera() {
     const data = await res.json();
     if (res.ok) {
       closeModal();
-      toast(editingId ? 'Đã cập nhật camera' : 'Đã thêm camera mới', 'ok');
+      toast(editingId ? 'Camera updated' : 'New camera added', 'ok');
       await loadCameras();
     } else {
       const out = document.getElementById('testResult');
       out.className = 'test-result err';
-      out.textContent = '✗ ' + (data.error || 'Không lưu được camera');
+      out.textContent = '✗ ' + (data.error || 'Could not save camera');
     }
   } catch (e) {
-    toast('Lỗi mạng khi lưu camera', 'err');
+    toast('Network error while saving camera', 'err');
   }
   btn.disabled = false;
-  btn.textContent = 'Lưu camera';
+  btn.textContent = 'Save camera';
 }
 
 async function deleteCamera(id) {
   const c = cameras.find(x => x.id === id);
   if (!c) return;
-  if (!confirm(`Xóa camera "${c.name}"?`)) return;
+  if (!confirm(`Delete camera "${c.name}"?`)) return;
   try {
     const res = await fetch(apiPath('api/cameras/' + id), { method: 'DELETE' });
     if (res.ok) {
-      toast('Đã xóa camera', 'ok');
+      toast('Camera deleted', 'ok');
       await loadCameras();
     } else {
-      toast('Không xóa được camera', 'err');
+      toast('Could not delete camera', 'err');
     }
   } catch (e) {
-    toast('Lỗi mạng khi xóa camera', 'err');
+    toast('Network error while deleting camera', 'err');
   }
 }
 
@@ -685,12 +685,12 @@ function openViewer(id) {
   v.classList.remove('is-offline');
   v.classList.add('open');
 
-  // Tạm dừng toàn bộ lưới phía sau: trình duyệt giới hạn 6 kết nối đồng thời
-  // tới 1 máy chủ — nếu không nhả ra thì luồng của viewer bị xếp hàng chờ mãi
+  // Pause the entire grid in the background: browsers limit 6 concurrent
+  // connections per server — if we don't release them, the viewer's stream queues forever
   cameras.forEach(c => stopPreview(c.id));
 
-  // Hiện NGAY bằng luồng phụ (kết nối nhanh), đồng thời tải luồng chính ngầm —
-  // xong thì tự chuyển sang bản nét cao.
+  // Show IMMEDIATELY using the sub stream (fast connection), while loading the
+  // main stream in the background — then automatically switch to the high-res version.
   const sub = document.getElementById('v_img_sub');
   const main = document.getElementById('v_img');
   main.style.display = 'none';
@@ -706,12 +706,12 @@ function startViewerStream() {
   if (!viewerCamId) return;
   const img = document.getElementById('v_img');
   img.onerror = () => {
-    // Luồng chính chưa lên được: giữ luồng phụ hiển thị, âm thầm thử lại
+    // Main stream isn't up yet: keep showing the sub stream, retry silently
     clearTimeout(viewerRetry);
     viewerRetry = setTimeout(startViewerStream, 6000);
   };
   img.onload = () => {
-    // Bản nét cao đã sẵn sàng -> chuyển hiển thị, ngắt luồng phụ
+    // High-res version is ready -> switch display, stop the sub stream
     const v = document.getElementById('viewer');
     v.classList.remove('is-offline');
     img.style.display = '';
@@ -739,7 +739,7 @@ function closeViewer() {
   stopViewerStreams();
   viewerCamId = null;
   document.getElementById('viewer').classList.remove('open');
-  // Mở lại lưới xem
+  // Reopen the grid view
   cameras.forEach(c => startPreview(c.id));
 }
 
@@ -751,46 +751,46 @@ function downloadSnapshot() {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  toast('Đang tải ảnh chụp...', 'ok');
+  toast('Downloading snapshot...', 'ok');
 }
 
-// ---------------- Gửi Telegram thủ công ----------------
+// ---------------- Manual Telegram send ----------------
 async function sendTelegramNow() {
   const btn = document.getElementById('btnTg');
   const old = btn.innerHTML;
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Đang gửi...';
+  btn.innerHTML = '<span class="spinner"></span> Sending...';
   try {
     const res = await fetch(apiPath('api/telegram/send-now'), { method: 'POST' });
     const data = await res.json();
     if (res.ok) {
-      toast('Đã gửi ảnh + video lên nhóm Telegram', 'ok');
+      toast('Photos + video sent to the Telegram group', 'ok');
     } else if (data.results && data.results.length) {
       const bad = data.results.find(r => !r.ok);
-      toast('Lỗi gửi Telegram: ' + (bad ? bad.error : '?'), 'err');
+      toast('Telegram send error: ' + (bad ? bad.error : '?'), 'err');
     } else {
-      toast(data.error || 'Không gửi được Telegram', 'err');
+      toast(data.error || 'Could not send to Telegram', 'err');
     }
   } catch (e) {
-    toast('Lỗi mạng khi gửi Telegram', 'err');
+    toast('Network error while sending to Telegram', 'err');
   }
   btn.disabled = false;
   btn.innerHTML = old;
 }
 
-// ---------------- Tạm dừng stream khi ẩn tab (tiết kiệm băng thông) ----------------
+// ---------------- Pause streams when tab is hidden (saves bandwidth) ----------------
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     cameras.forEach(c => stopPreview(c.id));
     if (viewerCamId) stopViewerStreams();
   } else if (viewerCamId) {
-    openViewer(viewerCamId);   // viewer đang mở: chỉ nối lại viewer, lưới vẫn dừng
+    openViewer(viewerCamId);   // viewer is open: only reconnect the viewer, grid stays paused
   } else {
     cameras.forEach(c => startPreview(c.id));
   }
 });
 
-// ---------------- Phím tắt & khởi động ----------------
+// ---------------- Keyboard shortcuts & startup ----------------
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     if (document.getElementById('viewer').classList.contains('open')) closeViewer();

@@ -1,14 +1,14 @@
-"""Camera Hub - Flask web app xem camera RTSP (Hikvision/EZVIZ).
+"""Camera Hub - Flask web app for viewing RTSP cameras (Hikvision/EZVIZ).
 
-Them camera chi can nhap IP + mat khau, mac dinh dung format:
-    rtsp://admin:<password>@<ip>:554/Streaming/Channels/101  (luong chinh)
-    rtsp://admin:<password>@<ip>:554/Streaming/Channels/102  (luong phu)
+Adding a camera only requires entering the IP + password; by default it uses the format:
+    rtsp://admin:<password>@<ip>:554/Streaming/Channels/101  (main stream)
+    rtsp://admin:<password>@<ip>:554/Streaming/Channels/102  (sub stream)
 
-Video duoc ffmpeg doc qua RTSP/TCP va chuyen thanh MJPEG de xem truc tiep
-tren trinh duyet (khong can plugin, hoat dong ca voi camera H.265/HEVC).
+Video is read by ffmpeg over RTSP/TCP and converted to MJPEG for direct viewing
+in the browser (no plugin needed, works even with H.265/HEVC cameras).
 
-Gui anh dinh ky + gui video tu dong khi phat hien nguoi (YOLOv8n, CPU) len
-Telegram.
+Sends periodic photos + automatically sends video when a person is detected
+(YOLOv8n, CPU) to Telegram.
 """
 
 import json
@@ -28,11 +28,11 @@ from flask import Flask, Response, jsonify, render_template, request
 from ultralytics import YOLO
 
 # ---------------------------------------------------------------------------
-# Cau hinh & luu tru
+# Configuration & storage
 # ---------------------------------------------------------------------------
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-# Khi chay trong Home Assistant addon, /data la thu muc luu tru ben vung
+# When running inside a Home Assistant addon, /data is the persistent storage directory
 DATA_DIR = os.environ.get("DATA_DIR") or ("/data" if os.path.isdir("/data") else APP_DIR)
 CAMERAS_FILE = os.path.join(DATA_DIR, "cameras.json")
 
@@ -41,28 +41,28 @@ DEFAULT_PORT = 554
 DEFAULT_PATH_MAIN = "/Streaming/Channels/101"
 DEFAULT_PATH_SUB = "/Streaming/Channels/102"
 
-# Gioi han stream de tiet kiem CPU
+# Limit the stream to save CPU
 STREAM_FPS = 10
-MAIN_MAX_WIDTH = 1280      # luong chinh scale xuong toi da 1280px
-JPEG_QUALITY = "7"         # 2 (tot nhat) .. 31 (te nhat)
-WORKER_IDLE_STOP_SECONDS = 15  # dung ffmpeg sau khi client cuoi cung roi di
-                               # (> nhip thu lai 6-8s cua UI de tai su dung worker dang am)
-FRAME_STALL_TIMEOUT = 15       # khong co frame moi trong N giay -> coi nhu mat ket noi
+MAIN_MAX_WIDTH = 1280      # main stream scaled down to at most 1280px
+JPEG_QUALITY = "7"         # 2 (best) .. 31 (worst)
+WORKER_IDLE_STOP_SECONDS = 15  # stop ffmpeg after the last client leaves
+                               # (> the UI's 6-8s retry cadence, to reuse the still-warm worker)
+FRAME_STALL_TIMEOUT = 15       # no new frame within N seconds -> treat as disconnected
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("camera-hub")
 
-# Chi dung 1 luong CPU cho OpenCV: may chay them nhieu tac vu khac, khong
-# de opencv/YOLO chiem het nhan CPU
+# Use only 1 CPU thread for OpenCV: the machine also runs other tasks, don't
+# let opencv/YOLO hog the entire CPU core
 cv2.setNumThreads(1)
 
 
-# Cac bien co san trong moi truong that (truoc khi nap .env) luon uu tien nhat
+# Variables already present in the real environment (before loading .env) always take priority
 _REAL_ENV_KEYS = frozenset(os.environ)
 
 
 def _env_file_values():
-    """Doc gia tri tu file .env (APP_DIR truoc, DATA_DIR ghi de neu trung key)."""
+    """Read values from the .env file (APP_DIR first, DATA_DIR overrides on key conflict)."""
     values = {}
     for path in (os.path.join(APP_DIR, ".env"), os.path.join(DATA_DIR, ".env")):
         try:
@@ -82,7 +82,7 @@ def _env_file_values():
 
 
 def _env(name, default=""):
-    """Lay cau hinh: env that > file .env (doc lai moi lan goi) > options.json."""
+    """Get config: real env > .env file (re-read on every call) > options.json."""
     if name in _REAL_ENV_KEYS:
         return os.environ.get(name, default)
     file_values = _env_file_values()
@@ -92,13 +92,13 @@ def _env(name, default=""):
 
 
 def _load_env_files():
-    """Nap .env vao environ luc khoi dong (cho cac bien chi doc 1 lan nhu PORT)."""
+    """Load .env into environ at startup (for variables read only once, like PORT)."""
     for key, value in _env_file_values().items():
         os.environ.setdefault(key, value)
 
 
 def _load_addon_options():
-    """Home Assistant addon: doc cau hinh tu /data/options.json neu co."""
+    """Home Assistant addon: read config from /data/options.json if present."""
     try:
         with open("/data/options.json", "r", encoding="utf-8") as f:
             options = json.load(f)
@@ -160,9 +160,9 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def _validate_camera_payload(payload, existing=None):
-    """Kiem tra du lieu them/sua camera. Tra ve (camera_dict, error_message)."""
+    """Validate add/edit camera data. Returns (camera_dict, error_message)."""
     if not isinstance(payload, dict):
-        return None, "Du lieu khong hop le"
+        return None, "Invalid data"
 
     name = str(payload.get("name") or "").strip()
     host = str(payload.get("host") or "").strip()
@@ -172,23 +172,23 @@ def _validate_camera_payload(payload, existing=None):
     path_sub = str(payload.get("path_sub") or "").strip() or DEFAULT_PATH_SUB
 
     if not host:
-        return None, "Vui lòng nhập địa chỉ IP của camera"
+        return None, "Please enter the camera's IP address"
     if not _HOST_RE.match(host):
-        return None, "Địa chỉ IP/hostname không hợp lệ"
+        return None, "Invalid IP address/hostname"
 
     try:
         port = int(payload.get("port") or DEFAULT_PORT)
         if not 1 <= port <= 65535:
             raise ValueError
     except (TypeError, ValueError):
-        return None, "Cổng RTSP không hợp lệ"
+        return None, "Invalid RTSP port"
 
     if existing:
-        # Sua camera: bo trong mat khau = giu mat khau cu
+        # Editing camera: leaving password blank = keep the old password
         if not password:
             password = existing.get("password", "")
     if not password:
-        return None, "Vui lòng nhập mật khẩu camera (pass security)"
+        return None, "Please enter the camera password (pass security)"
 
     if not name:
         name = f"Camera {host}"
@@ -207,19 +207,19 @@ def _validate_camera_payload(payload, existing=None):
 
 
 def _public_camera(cam):
-    """Ban sao camera de tra ve frontend - khong lo mat khau."""
+    """Camera copy to return to the frontend - doesn't leak the password."""
     out = {k: v for k, v in cam.items() if k != "password"}
     out["has_password"] = bool(cam.get("password"))
     return out
 
 
 # ---------------------------------------------------------------------------
-# ffmpeg: doc RTSP -> MJPEG, chia se 1 tien trinh cho nhieu nguoi xem
+# ffmpeg: read RTSP -> MJPEG, share 1 process across multiple viewers
 # ---------------------------------------------------------------------------
 
 
 class StreamWorker:
-    """Mot tien trinh ffmpeg doc 1 luong RTSP, phat frame JPEG cho moi client."""
+    """One ffmpeg process reads 1 RTSP stream, broadcasts JPEG frames to each client."""
 
     def __init__(self, url, max_width=None, fps=STREAM_FPS):
         self.url = url
@@ -239,12 +239,12 @@ class StreamWorker:
         vf = f"fps={self.fps}"
         if self.max_width:
             vf += f",scale='min({self.max_width},iw)':-2"
-        # Khong dung -fflags nobuffer: voi HEVC no lam ffmpeg giai ma giua
-        # GOP truoc khi keyframe den -> hang loat frame xam khi moi ket noi
+        # Don't use -fflags nobuffer: with HEVC it makes ffmpeg decode mid-
+        # GOP before the keyframe arrives -> a batch of gray frames on every new connection
         return [
             "ffmpeg", "-nostdin", "-loglevel", "error",
             "-rtsp_transport", "tcp",
-            # Rut ngan thoi gian do luong khi moi ket noi (codec da biet tu SDP)
+            # Shorten the probing time on each new connection (codec already known from SDP)
             "-probesize", "1000000",
             "-analyzeduration", "1000000",
             "-i", self.url,
@@ -267,13 +267,13 @@ class StreamWorker:
             buf = b""
             fd = stdout.fileno()
             while self.running:
-                # os.read tra ve ngay khi co du lieu (read() thuong se cho du
-                # 64KB moi tra -> frame bi don cum lam giam fps thuc te)
+                # os.read returns as soon as data is available (read() usually waits until
+                # 64KB is filled before returning -> frames get batched, lowering actual fps)
                 chunk = os.read(fd, 65536)
                 if not chunk:
                     break
                 buf += chunk
-                # Tach cac anh JPEG theo marker SOI (FFD8) / EOI (FFD9)
+                # Split JPEG images by SOI (FFD8) / EOI (FFD9) markers
                 while True:
                     soi = buf.find(b"\xff\xd8")
                     if soi < 0:
@@ -366,7 +366,7 @@ def _mjpeg_stream(cam, src, fps=STREAM_FPS):
                     break
                 frame = worker.frame
                 if worker.frame_id == last_id or frame is None:
-                    break  # qua lau khong co frame moi -> ngat de client tu ket noi lai
+                    break  # too long without a new frame -> disconnect so the client reconnects
                 last_id = worker.frame_id
             yield (
                 b"--frame\r\n"
@@ -379,7 +379,7 @@ def _mjpeg_stream(cam, src, fps=STREAM_FPS):
 
 
 def _snapshot(cam, src="main", timeout=15):
-    """Chup 1 anh JPEG tu camera."""
+    """Capture 1 JPEG image from the camera."""
     cmd = [
         "ffmpeg", "-nostdin", "-loglevel", "error",
         "-rtsp_transport", "tcp",
@@ -397,7 +397,7 @@ def _snapshot(cam, src="main", timeout=15):
 
 
 def _probe(url, timeout=12):
-    """Kiem tra ket noi RTSP bang ffprobe. Tra ve (info_dict, error_message)."""
+    """Check the RTSP connection using ffprobe. Returns (info_dict, error_message)."""
     cmd = [
         "ffprobe", "-v", "error",
         "-rtsp_transport", "tcp",
@@ -409,20 +409,20 @@ def _probe(url, timeout=12):
     try:
         result = subprocess.run(cmd, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return None, "Hết thời gian chờ - camera không phản hồi"
+        return None, "Timed out - camera is not responding"
     if result.returncode != 0:
         err = (result.stderr or b"").decode("utf-8", "replace").strip()
         if "401" in err or "Unauthorized" in err:
-            return None, "Sai tài khoản hoặc mật khẩu (401 Unauthorized)"
+            return None, "Wrong username or password (401 Unauthorized)"
         if "404" in err or "Not Found" in err:
-            return None, "Không tìm thấy luồng video (404) - kiểm tra lại đường dẫn RTSP"
+            return None, "Video stream not found (404) - check the RTSP path"
         if "Connection refused" in err:
-            return None, "Camera từ chối kết nối - kiểm tra IP và cổng RTSP"
-        return None, err.splitlines()[-1] if err else "Không kết nối được camera"
+            return None, "Camera refused the connection - check the IP and RTSP port"
+        return None, err.splitlines()[-1] if err else "Could not connect to the camera"
     try:
         streams = json.loads(result.stdout).get("streams", [])
         if not streams:
-            return None, "Không tìm thấy luồng video"
+            return None, "Video stream not found"
         s = streams[0]
         fps = s.get("avg_frame_rate", "0/1")
         try:
@@ -437,31 +437,31 @@ def _probe(url, timeout=12):
             "fps": fps_val,
         }, None
     except ValueError:
-        return None, "Không đọc được thông tin luồng video"
+        return None, "Could not read the video stream information"
 
 
 # ---------------------------------------------------------------------------
-# Telegram: gui anh + video dinh ky vao nhom
+# Telegram: send periodic photos + videos to the group
 # ---------------------------------------------------------------------------
 
 TELEGRAM_API = "https://api.telegram.org"
 
-# Topic (forum) rieng cho tung camera + 1 topic chung cho anh dinh ky.
-# Chi hoat dong neu nhom da bat "Topics" va bot duoc cap quyen "Manage
-# Topics" - neu chua thi cac ham nay tra ve None va tin nhan roi vao topic
-# "General" nhu binh thuong (khong loi).
+# A separate topic (forum) for each camera + 1 shared topic for periodic photos.
+# Only works if the group has "Topics" enabled and the bot has "Manage
+# Topics" permission - if not, these functions return None and messages
+# land in the "General" topic as usual (no error).
 TELEGRAM_TOPICS_FILE = os.path.join(DATA_DIR, "telegram_topics.json")
 PHOTOS_TOPIC_KEY = "photos"
-PHOTOS_TOPIC_NAME = "\U0001F4F7 Ảnh"
-TOPIC_RETRY_SECONDS = 300  # tao topic that bai -> cho tung nay giay moi thu lai, tranh spam API loi
+PHOTOS_TOPIC_NAME = "\U0001F4F7 Photos"
+TOPIC_RETRY_SECONDS = 300  # topic creation failed -> wait this many seconds before retrying, to avoid spamming the API with errors
 
 _topics_lock = threading.Lock()
 _topic_retry_after = {}
 
 
 def _telegram_settings():
-    """Doc cau hinh Telegram - doc lai .env moi lan goi nen sua file la ap dung
-    ngay o chu ky ke tiep, khong can khoi dong lai."""
+    """Read Telegram config - re-reads .env on every call so editing the file
+    takes effect on the next cycle immediately, without restarting."""
     def _num(name, default, cast):
         try:
             return cast(_env(name) or default)
@@ -471,7 +471,7 @@ def _telegram_settings():
     token = _env("TELEGRAM_BOT_TOKEN").strip()
     chat_id = _env("TELEGRAM_CHAT_ID").strip()
     enabled_raw = _env("TELEGRAM_ENABLED").strip().lower()
-    # Nguon quay video khi phat hien nguoi: "sub" (luong phu - nhe mang, mac dinh) hoac "main"
+    # Video source when a person is detected: "sub" (sub stream - lighter on bandwidth, default) or "main"
     video_source = "main" if _env("TELEGRAM_VIDEO_SOURCE").strip().lower() == "main" else "sub"
     base_interval = max(1.0, _num("TELEGRAM_INTERVAL_MINUTES", 10.0, float))
     return {
@@ -523,16 +523,17 @@ def _create_forum_topic(settings, name):
         })
         return result.get("message_thread_id")
     except Exception as exc:
-        log.warning("Telegram: khong tao duoc topic '%s': %s", name, exc)
+        log.warning("Telegram: failed to create topic '%s': %s", name, exc)
         return None
 
 
 def _get_topic_thread_id(settings, key, name):
-    """Tra ve message_thread_id cho 1 topic (tu cache file, hoac tu tao moi
-    neu chua co). Neu nhom chua bat Topics hoac bot chua co quyen quan ly
-    topic, tao topic se that bai - luc do cho TOPIC_RETRY_SECONDS moi thu
-    lai (thay vi goi API loi lien tuc), va tra ve None de tin nhan van gui
-    binh thuong (khong dinh kem message_thread_id)."""
+    """Return the message_thread_id for a topic (from the cache file, or by creating
+    a new one if it doesn't exist yet). If the group hasn't enabled Topics or the
+    bot doesn't have topic-management permission, topic creation will fail - in
+    that case wait TOPIC_RETRY_SECONDS before retrying (instead of calling the
+    failing API repeatedly), and return None so the message still gets sent
+    normally (without a message_thread_id)."""
     with _topics_lock:
         topics = _load_topics()
         thread_id = topics.get(key)
@@ -547,7 +548,7 @@ def _get_topic_thread_id(settings, key, name):
             return None
         topics[key] = thread_id
         _save_topics(topics)
-        log.info("Telegram: da tao topic '%s' (thread_id=%s)", name, thread_id)
+        log.info("Telegram: created topic '%s' (thread_id=%s)", name, thread_id)
         return thread_id
 
 
@@ -560,8 +561,9 @@ def _camera_topic_thread_id(settings, cam):
 
 
 def _ensure_all_topics():
-    """Tao truoc topic cho anh + tat ca camera dang co (khong cho toi khi co
-    nguoi/den chu ky gui anh moi tao) - chay ngam khi khoi dong."""
+    """Pre-create the topic for photos + all existing cameras (instead of waiting
+    until a person is detected/the photo cycle to create them) - runs in the
+    background at startup."""
     settings = _telegram_settings()
     if not settings["enabled"]:
         return
@@ -571,23 +573,24 @@ def _ensure_all_topics():
 
 
 def _record_clip(cam, seconds, src="sub"):
-    """Quay 1 doan video ngan tu camera, tra ve duong dan file mp4 (H.264).
+    """Record a short video clip from the camera, return the mp4 (H.264) file path.
 
-    Mac dinh quay tu luong phu: nhe mang hon ~6 lan so voi luong chinh,
-    du xem tren dien thoai. Dat TELEGRAM_VIDEO_SOURCE=main neu can net cao.
+    Records from the sub stream by default: ~6x lighter on bandwidth than the
+    main stream, good enough for viewing on a phone. Set TELEGRAM_VIDEO_SOURCE=main
+    if you need higher resolution.
     """
     fd, path = tempfile.mkstemp(suffix=".mp4", prefix="camera_hub_")
     os.close(fd)
     cmd = [
         "ffmpeg", "-y", "-nostdin", "-loglevel", "error",
         "-rtsp_transport", "tcp",
-        # Camera EZVIZ danh timestamp video/audio lech nhau hang gio ->
-        # khong co co nay thi -t se cat mat toan bo am thanh
+        # EZVIZ cameras timestamp video/audio streams hours apart ->
+        # without this flag, -t would cut out all the audio
         "-use_wallclock_as_timestamps", "1",
         "-i", _rtsp_url(cam, src),
         "-t", str(seconds),
         "-vf", "scale='min(1280,iw)':-2",
-        # Ep H.264 vi Telegram/trinh duyet khong phat truc tiep duoc HEVC
+        # Force H.264 because Telegram/browsers can't play HEVC directly
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
         "-c:a", "aac", "-b:a", "64k",
         "-movflags", "+faststart",
@@ -598,9 +601,9 @@ def _record_clip(cam, seconds, src="sub"):
         if result.returncode == 0 and os.path.getsize(path) > 0:
             return path
         err = (result.stderr or b"").decode("utf-8", "replace").strip()
-        log.warning("Khong quay duoc clip camera %s: %s", cam["name"], err.splitlines()[-1] if err else "?")
+        log.warning("Failed to record clip for camera %s: %s", cam["name"], err.splitlines()[-1] if err else "?")
     except subprocess.TimeoutExpired:
-        log.warning("Quay clip camera %s qua thoi gian cho", cam["name"])
+        log.warning("Recording clip for camera %s timed out", cam["name"])
     try:
         os.remove(path)
     except OSError:
@@ -609,9 +612,9 @@ def _record_clip(cam, seconds, src="sub"):
 
 
 def _send_photo_album(settings, photos, stamp):
-    """Gui tat ca anh trong 1 lan (album). Telegram gioi han 10 anh/album
-    nen neu nhieu camera hon thi chia thanh nhieu album lien tiep.
-    Toan bo anh (moi camera) gui chung vao 1 topic "Ảnh"."""
+    """Send all photos in one go (album). Telegram limits albums to 10 photos,
+    so if there are more cameras, split into multiple consecutive albums.
+    All photos (per camera) are sent together into 1 "Photos" topic."""
     thread_id = _photos_topic_thread_id(settings)
     for start in range(0, len(photos), 10):
         chunk = photos[start:start + 10]
@@ -648,8 +651,8 @@ _telegram_report_lock = threading.Lock()
 
 
 def _send_photo_batch(settings):
-    """Chup anh TAT CA camera roi gom gui chung 1 luot (album).
-    Tra ve ket qua theo tung camera (dict cam_id -> row)."""
+    """Capture photos from ALL cameras then send them together in one batch (album).
+    Returns results per camera (dict cam_id -> row)."""
     cams = _load_cameras()
     stamp = time.strftime("%d/%m/%Y %H:%M:%S")
     rows = {c["id"]: {"camera": c["name"], "ok": True, "sent": []} for c in cams}
@@ -661,39 +664,40 @@ def _send_photo_batch(settings):
             photos.append((cam, data))
         else:
             rows[cam["id"]]["ok"] = False
-            rows[cam["id"]]["error"] = "không chụp được ảnh"
-            log.warning("Telegram: khong chup duoc anh camera %s", cam["name"])
+            rows[cam["id"]]["error"] = "could not capture photo"
+            log.warning("Telegram: could not capture photo for camera %s", cam["name"])
     if photos:
         try:
             _send_photo_album(settings, photos, stamp)
             for cam, _ in photos:
-                rows[cam["id"]]["sent"].append("ảnh")
+                rows[cam["id"]]["sent"].append("photo")
         except Exception as exc:
             for cam, _ in photos:
                 rows[cam["id"]]["ok"] = False
                 rows[cam["id"]]["error"] = str(exc)
-            log.warning("Telegram: loi gui album anh: %s", exc)
-    failed_snap = [r["camera"] for r in rows.values() if r.get("error") == "không chụp được ảnh"]
+            log.warning("Telegram: error sending photo album: %s", exc)
+    failed_snap = [r["camera"] for r in rows.values() if r.get("error") == "could not capture photo"]
     if failed_snap:
         try:
             data_form = {
                 "chat_id": settings["chat_id"],
-                "text": f"⚠️ Không chụp được ảnh từ: {', '.join(failed_snap)} ({stamp})",
+                "text": f"⚠️ Could not capture photo from: {', '.join(failed_snap)} ({stamp})",
             }
             thread_id = _photos_topic_thread_id(settings)
             if thread_id:
                 data_form["message_thread_id"] = thread_id
             _tg_send(settings, "sendMessage", data_form)
         except Exception as exc:
-            log.warning("Telegram: loi gui canh bao: %s", exc)
-    log.info("Telegram [anh]: da gui album %d/%d camera", len(photos), len(cams))
+            log.warning("Telegram: error sending warning: %s", exc)
+    log.info("Telegram [photo]: sent album %d/%d cameras", len(photos), len(cams))
     return rows
 
 
 def _send_all_reports():
-    """Gui ngay album anh cua tat ca camera (dung cho nut 'Gui Telegram' tren
-    web). Video khong con gui theo yeu cau - chi gui tu dong khi phat hien
-    nguoi trong khung hinh, xem phan "Phat hien nguoi" ben duoi."""
+    """Immediately send a photo album of all cameras (used by the 'Send to Telegram'
+    button on the web UI). Video is no longer sent on demand - it's only sent
+    automatically when a person is detected in the frame, see the "Person
+    detection" section below."""
     settings = _telegram_settings()
     if not settings["enabled"]:
         return {"enabled": False, "results": []}
@@ -703,14 +707,14 @@ def _send_all_reports():
 
 
 def _send_person_clip(settings, cam, clip_path, seconds):
-    """Gui 1 doan clip da quay duoc (co nguoi) len Telegram roi xoa file tam.
-    Moi camera gui vao topic rieng cua no (neu nhom da bat Topics)."""
+    """Send a recorded clip (with a person) to Telegram then delete the temp file.
+    Each camera sends to its own topic (if the group has Topics enabled)."""
     stamp = time.strftime("%d/%m/%Y %H:%M:%S")
     try:
         with open(clip_path, "rb") as f:
             data_form = {
                 "chat_id": settings["chat_id"],
-                "caption": f"\U0001F6A8 Phát hiện người • {cam['name']} • {stamp} ({seconds}s)",
+                "caption": f"\U0001F6A8 Person detected • {cam['name']} • {stamp} ({seconds}s)",
                 "supports_streaming": "true",
             }
             thread_id = _camera_topic_thread_id(settings, cam)
@@ -721,9 +725,9 @@ def _send_person_clip(settings, cam, clip_path, seconds):
                 files={"video": (f"{cam['host']}.mp4", f, "video/mp4")},
                 timeout=300,
             )
-        log.info("Telegram [người]: đã gửi clip camera %s (%ds)", cam["name"], seconds)
+        log.info("Telegram [person]: sent clip for camera %s (%ds)", cam["name"], seconds)
     except Exception as exc:
-        log.warning("Telegram: lỗi gửi clip phát hiện người camera %s: %s", cam["name"], exc)
+        log.warning("Telegram: error sending person-detection clip for camera %s: %s", cam["name"], exc)
     finally:
         try:
             os.remove(clip_path)
@@ -732,8 +736,8 @@ def _send_person_clip(settings, cam, clip_path, seconds):
 
 
 def _run_periodic(kind, batch_fn, interval_key, first_delay):
-    """Vong lap gui dinh ky. Chu ky tinh tu LUC BAT DAU moi dot de giu dung
-    nhip ke ca khi mot dot keo dai; toi thieu nghi 20s giua 2 dot."""
+    """Periodic sending loop. The cycle is timed from the START of each round to keep
+    the correct cadence even if a round runs long; wait at least 20s between rounds."""
     time.sleep(first_delay)
     while True:
         started = time.monotonic()
@@ -743,39 +747,40 @@ def _run_periodic(kind, batch_fn, interval_key, first_delay):
                 with _telegram_report_lock:
                     batch_fn(settings)
             except Exception as exc:
-                log.warning("Telegram [%s]: loi dot gui: %s", kind, exc)
+                log.warning("Telegram [%s]: error during send round: %s", kind, exc)
         elapsed = time.monotonic() - started
         time.sleep(max(20, settings[interval_key] * 60 - elapsed))
 
 
 def _photo_worker():
-    _run_periodic("anh", _send_photo_batch, "photo_interval_minutes", first_delay=15)
+    _run_periodic("photo", _send_photo_batch, "photo_interval_minutes", first_delay=15)
 
 
 def _start_telegram_workers():
     settings = _telegram_settings()
     if settings["enabled"]:
         log.info(
-            "Telegram: anh moi %.0f phut (album) | video: tu dong khi phat hien nguoi (nguon %s) | chat %s",
+            "Telegram: photo every %.0f minutes (album) | video: automatic on person detection (source %s) | chat %s",
             settings["photo_interval_minutes"], settings["video_source"], settings["chat_id"],
         )
     else:
-        log.info("Telegram: chua cau hinh TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID - tat gui dinh ky")
+        log.info("Telegram: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not configured - periodic sending disabled")
     threading.Thread(target=_ensure_all_topics, daemon=True).start()
     threading.Thread(target=_photo_worker, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
-# Phat hien nguoi (YOLOv8n, CPU) -> ghi clip -> gui Telegram
+# Person detection (YOLOv8n, CPU) -> record clip -> send to Telegram
 #
-# Moi camera co 2 thread:
-#  - _detection_loop: doc luong phu fps thap, chi chay YOLO khi co chuyen
-#    dong (hoac da qua lau chua kiem tra) de khong ngon CPU khi khung hinh
-#    dung yen - von la phan lon thoi gian voi camera an ninh.
-#  - _recorder_loop: cho toi khi co nguoi xuat hien roi quay 1 doan clip
-#    (mac dinh 20s) va gui Telegram; neu nguoi con xuat hien lien tuc thi
-#    noi tiep cac doan clip dai hon (mac dinh 60s) cho toi khi nguoi roi
-#    khoi khung hinh.
+# Each camera has 2 threads:
+#  - _detection_loop: reads the sub stream at a low fps, only runs YOLO when
+#    there's motion (or it's been too long since the last check) so it
+#    doesn't hog the CPU when the frame is static - which is most of the
+#    time for a security camera.
+#  - _recorder_loop: waits until a person appears, then records a clip
+#    (default 20s) and sends it to Telegram; if the person keeps appearing
+#    continuously, it chains longer clips (default 60s) until the person
+#    leaves the frame.
 # ---------------------------------------------------------------------------
 
 _yolo_model = None
@@ -804,18 +809,18 @@ def _person_detect_settings():
 
 
 def _get_yolo_model(model_name):
-    """Nap model YOLO 1 lan duy nhat, dung chung cho moi camera (khoa toan
-    cuc cung serialize luon cac lan chay inference - chi 1 camera chay AI
-    tai 1 thoi diem, tranh nhieu tien trinh AI tranh CPU cung luc)."""
+    """Load the YOLO model exactly once, shared across all cameras (the global
+    lock also serializes inference runs - only 1 camera runs AI at a time,
+    preventing multiple AI processes from competing for CPU simultaneously)."""
     global _yolo_model
     with _yolo_lock:
         if _yolo_model is None:
             weight_path = model_name
             if not os.path.isabs(weight_path) and os.sep not in weight_path:
-                # Luu trong DATA_DIR (thu muc ben vung) de khong tai lai
-                # tu mang moi khi container khoi dong lai
+                # Store it in DATA_DIR (persistent directory) so it isn't re-downloaded
+                # from the network every time the container restarts
                 weight_path = os.path.join(DATA_DIR, model_name)
-            log.info("Dang nap model phat hien nguoi: %s", weight_path)
+            log.info("Loading person-detection model: %s", weight_path)
             _yolo_model = YOLO(weight_path)
         return _yolo_model
 
@@ -830,8 +835,8 @@ def _detect_person(model, frame_bgr, conf):
 
 
 class _PersonState:
-    """Thoi diem gan nhat phat hien nguoi cho 1 camera - doc/ghi tu 2 thread
-    khac nhau (detection & recorder) nen can khoa."""
+    """The most recent time a person was detected for 1 camera - read/written from 2
+    different threads (detection & recorder) so it needs a lock."""
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -867,12 +872,12 @@ def _detection_loop(cam_id, stop_event):
     try:
         model = _get_yolo_model(settings["model"])
     except Exception as exc:
-        log.warning("Khong nap duoc model phat hien nguoi cho camera %s: %s", cam["name"], exc)
+        log.warning("Failed to load person-detection model for camera %s: %s", cam["name"], exc)
         return
     state = _get_person_state(cam_id)
 
-    # Vong lap ngoai: tu ket noi lai neu luong RTSP bi rot (camera reset,
-    # mat mang...) thay vi thoat han va bo giam sat camera nay vinh vien.
+    # Outer loop: automatically reconnect if the RTSP stream drops (camera reset,
+    # network loss...) instead of exiting entirely and permanently stopping monitoring for this camera.
     while not stop_event.is_set():
         cam = _get_camera(cam_id)
         if cam is None:
@@ -882,7 +887,7 @@ def _detection_loop(cam_id, stop_event):
         last_checked = 0.0
         last_id = 0
         got_first_frame = False
-        log.info("Giam sat nguoi: da bat dau cho camera %s", cam["name"])
+        log.info("Person monitoring: started for camera %s", cam["name"])
         try:
             while not stop_event.is_set():
                 with worker.cond:
@@ -898,7 +903,7 @@ def _detection_loop(cam_id, stop_event):
                     last_id = worker.frame_id
                 if not got_first_frame:
                     got_first_frame = True
-                    log.info("Giam sat nguoi: da nhan frame dau tien tu camera %s", cam["name"])
+                    log.info("Person monitoring: received the first frame from camera %s", cam["name"])
                 arr = np.frombuffer(frame_bytes, dtype=np.uint8)
                 frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                 if frame is None:
@@ -919,13 +924,13 @@ def _detection_loop(cam_id, stop_event):
                     if _detect_person(model, frame, settings["conf"]):
                         state.mark_seen()
                 except Exception as exc:
-                    log.warning("Loi chay AI phat hien nguoi camera %s: %s", cam["name"], exc)
+                    log.warning("Error running person-detection AI for camera %s: %s", cam["name"], exc)
         finally:
             _release_worker(key, worker)
 
         if stop_event.is_set():
             break
-        log.warning("Giam sat nguoi: mat ket noi camera %s, thu ket noi lai sau 5s", cam["name"])
+        log.warning("Person monitoring: lost connection to camera %s, retrying in 5s", cam["name"])
         stop_event.wait(5)
 
 
@@ -935,7 +940,7 @@ def _recorder_loop(cam_id, stop_event):
         if not state.recently_seen(1.0):
             time.sleep(0.5)
             continue
-        # Vua phat hien nguoi -> bat dau 1 phien ghi hinh, doan dau 20s
+        # Person just detected -> start a recording session, first segment 20s
         settings = _person_detect_settings()
         duration = settings["first_clip_seconds"]
         while not stop_event.is_set():
@@ -977,8 +982,8 @@ def _start_camera_worker(cam_id):
 
 
 def _person_detect_manager():
-    """Dong bo danh sach camera dang duoc giam sat nguoi voi cameras.json
-    va trang thai bat/tat Telegram - kiem tra lai moi 20s."""
+    """Sync the list of cameras being monitored for persons with cameras.json
+    and the Telegram enabled/disabled state - re-checks every 20s."""
     while True:
         settings = _person_detect_settings()
         tg = _telegram_settings()
@@ -1032,7 +1037,7 @@ def api_update_camera(cam_id):
         cams = _load_cameras()
         existing = next((c for c in cams if c.get("id") == cam_id), None)
         if existing is None:
-            return jsonify({"error": "Không tìm thấy camera"}), 404
+            return jsonify({"error": "Camera not found"}), 404
         cam, err = _validate_camera_payload(request.get_json(silent=True), existing=existing)
         if err:
             return jsonify({"error": err}), 400
@@ -1046,8 +1051,8 @@ def api_delete_camera(cam_id):
     with _store_lock:
         cams = _load_cameras()
         remaining = [c for c in cams if c.get("id") != cam_id]
-        # Idempotent: xoa camera khong ton tai van tra ok (tranh bao loi
-        # khi bam nut xoa 2 lan lien tiep)
+        # Idempotent: deleting a camera that doesn't exist still returns ok (avoids an
+        # error when the delete button is clicked twice in a row)
         if len(remaining) != len(cams):
             _save_cameras(remaining)
     with _workers_lock:
@@ -1064,7 +1069,7 @@ def api_delete_camera(cam_id):
 
 @app.route("/api/test", methods=["POST"])
 def api_test_connection():
-    """Kiem tra ket noi truoc khi luu camera."""
+    """Check the connection before saving the camera."""
     payload = request.get_json(silent=True) or {}
     existing = None
     cam_id = payload.get("id")
@@ -1083,7 +1088,7 @@ def api_test_connection():
 def stream(cam_id):
     cam = _get_camera(cam_id)
     if cam is None:
-        return jsonify({"error": "Không tìm thấy camera"}), 404
+        return jsonify({"error": "Camera not found"}), 404
     src = "sub" if request.args.get("src") == "sub" else "main"
     try:
         fps = max(1, min(15, int(request.args.get("fps", STREAM_FPS))))
@@ -1100,10 +1105,10 @@ def stream(cam_id):
 def snapshot(cam_id):
     cam = _get_camera(cam_id)
     if cam is None:
-        return jsonify({"error": "Không tìm thấy camera"}), 404
+        return jsonify({"error": "Camera not found"}), 404
     data = _snapshot(cam, "main")
     if data is None:
-        return jsonify({"error": "Không chụp được ảnh từ camera"}), 502
+        return jsonify({"error": "Could not capture photo from camera"}), 502
     headers = {"Cache-Control": "no-store"}
     if request.args.get("download"):
         ts = time.strftime("%Y%m%d_%H%M%S")
@@ -1113,11 +1118,11 @@ def snapshot(cam_id):
 
 @app.route("/api/telegram/send-now", methods=["POST"])
 def api_telegram_send_now():
-    """Gui ngay album anh cua tat ca camera vao nhom Telegram (video chi
-    gui tu dong khi phat hien nguoi)."""
+    """Immediately send a photo album of all cameras to the Telegram group (video
+    is only sent automatically when a person is detected)."""
     settings = _telegram_settings()
     if not settings["enabled"]:
-        return jsonify({"error": "Chưa cấu hình Telegram (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID trong .env)"}), 400
+        return jsonify({"error": "Telegram is not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID in .env)"}), 400
     report = _send_all_reports()
     ok = bool(report["results"]) and all(r["ok"] for r in report["results"])
     return jsonify(report), (200 if ok else 502)

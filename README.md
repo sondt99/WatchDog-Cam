@@ -1,109 +1,125 @@
 # Camera Hub
 
-Web app xem camera RTSP (Hikvision / EZVIZ và các camera tương tự) trực tiếp
-trên trình duyệt + tự động gửi ảnh định kỳ và **video khi phát hiện người**
-lên Telegram.
+A web app to watch RTSP cameras (Hikvision / EZVIZ and similar cameras) directly
+in your browser + automatically send periodic photos and **video when a person
+is detected** to Telegram.
 
-## Tính năng
+## Features
 
-- **Thêm camera cực dễ**: chỉ cần nhập **địa chỉ IP + mật khẩu** (pass security
-  in trên tem camera). App tự dựng URL RTSP theo chuẩn Hikvision/EZVIZ:
+- **Adding a camera is super easy**: just enter the **IP address + password**
+  (the security pass printed on the camera's label). The app automatically
+  builds the RTSP URL using the Hikvision/EZVIZ standard:
 
   ```
-  rtsp://admin:<MẬT_KHẨU>@<IP>:554/Streaming/Channels/101   (luồng chính)
-  rtsp://admin:<MẬT_KHẨU>@<IP>:554/Streaming/Channels/102   (luồng phụ)
+  rtsp://admin:<PASSWORD>@<IP>:554/Streaming/Channels/101   (main stream)
+  rtsp://admin:<PASSWORD>@<IP>:554/Streaming/Channels/102   (sub stream)
   ```
 
-- **Xem trực tiếp trên web**: video được ffmpeg đọc qua RTSP/TCP và chuyển thành
-  MJPEG nên xem được trên mọi trình duyệt, kể cả camera H.265/HEVC.
-- **Lưới camera**: xem nhiều camera cùng lúc (luồng phụ cho nhẹ máy),
-  bấm vào để phóng to xem luồng chính chất lượng cao.
-- **Gửi ảnh Telegram định kỳ**: mỗi chu kỳ bot chụp ảnh **tất cả camera gom
-  thành 1 album gửi 1 lượt**. Có nút **📤 Gửi Telegram** trên giao diện để
-  gửi ngay.
-- **Gửi video khi phát hiện người**: mỗi camera tự chạy model YOLOv8n (CPU,
-  không cần GPU) để phát hiện người trong luồng phụ. Vừa thấy người là ghi
-  1 đoạn clip (mặc định 20s) và gửi Telegram; nếu người còn xuất hiện liên
-  tục thì ghi nối tiếp các đoạn dài hơn (mặc định 60s, ~1 phút/lần) cho tới
-  khi người rời khỏi khung hình. Không có người thì không gửi video.
-- **Chụp ảnh** tải về máy; **kiểm tra kết nối** trước khi lưu camera.
-- Camera khác chuẩn (Dahua, ONVIF...): chỉnh tài khoản/cổng/đường dẫn luồng
-  trong mục **Cài đặt nâng cao**.
+- **Live view in the browser**: video is read via RTSP/TCP by ffmpeg and
+  converted to MJPEG so it can be viewed in any browser, even for
+  H.265/HEVC cameras.
+- **Camera grid**: watch multiple cameras at once (using the sub stream to
+  keep it lightweight), click one to enlarge and view the high-quality main
+  stream.
+- **Periodic Telegram photo sending**: on each cycle the bot takes a photo
+  from **all cameras and sends them together as a single album in one go**.
+  There's also a **📤 Send to Telegram** button in the UI to send
+  immediately.
+- **Send video when a person is detected**: each camera runs its own YOLOv8n
+  model (CPU only, no GPU required) to detect people in the sub stream. As
+  soon as a person is seen, it records a clip (20s by default) and sends it
+  to Telegram; if the person keeps appearing continuously, it keeps
+  recording longer follow-up clips (60s by default, roughly once per
+  minute) until the person leaves the frame. If there's no person, no video
+  is sent.
+- **Take a snapshot** to download to your device; **test the connection**
+  before saving a camera.
+- For cameras with a different standard (Dahua, ONVIF, etc.): adjust the
+  account/port/stream path in the **Advanced settings** section.
 
-## Chạy bằng Docker (khuyên dùng)
+## Running with Docker (recommended)
 
 ```bash
-# 1. Tạo file cấu hình Telegram
-cp .env.example .env   # rồi điền token + chat ID
+# 1. Create the Telegram configuration file
+cp .env.example .env   # then fill in the token + chat ID
 
-# 2. Build và chạy
+# 2. Build and run
 docker compose up -d --build
 
-# 3. Mở http://localhost:8000
+# 3. Open http://localhost:8000
 ```
 
-Dữ liệu camera lưu ở `./data/cameras.json`. File `.env` được mount vào
-container nên **sửa cấu hình Telegram không cần build lại** — áp dụng ở chu kỳ
-gửi kế tiếp.
+Camera data is stored in `./data/cameras.json`. The `.env` file is mounted
+into the container, so **changing the Telegram configuration doesn't require
+a rebuild** — it takes effect on the next send cycle.
 
-Xem log: `docker logs -f camera-hub` • Dừng: `docker compose down`
+View logs: `docker logs -f camera-hub` • Stop: `docker compose down`
 
-## Chạy trực tiếp bằng Python
+## Running directly with Python
 
 ```bash
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
-# cần có ffmpeg: sudo apt install ffmpeg
-python3 app.py   # mở http://localhost:8000
+# ffmpeg is required: sudo apt install ffmpeg
+python3 app.py   # opens http://localhost:8000
 ```
 
-Cài `torch`/`torchvision` bản CPU trước (dòng đầu) để tránh `pip` tự kéo bản
-CUDA mặc định — nặng hơn nhiều GB mà máy không có GPU không dùng tới.
-Khi chạy trực tiếp, danh sách camera lưu ở `cameras.json` cạnh mã nguồn.
-Model `yolov8n.pt` (~6MB) sẽ tự tải về `data/` (hoặc `DATA_DIR`) ở lần chạy
-đầu tiên — cần có mạng internet lúc đó, các lần sau dùng lại file đã tải.
+Install the CPU build of `torch`/`torchvision` first (the line above) to
+avoid `pip` automatically pulling the default CUDA build — which is many GB
+heavier and unnecessary on a machine without a GPU.
+When running directly, the camera list is stored in `cameras.json` next to
+the source code.
+The `yolov8n.pt` model (~6MB) is downloaded automatically into `data/` (or
+`DATA_DIR`) on the first run — an internet connection is required at that
+time; subsequent runs reuse the already downloaded file.
 
-## Cấu hình Telegram (.env)
+## Telegram configuration (.env)
 
 ```
-TELEGRAM_BOT_TOKEN=<token từ @BotFather>
-TELEGRAM_CHAT_ID=<ID nhóm, ví dụ -100xxxxxxxxxx>
-TELEGRAM_PHOTO_INTERVAL_MINUTES=10   # chu kỳ gửi ảnh (phút)
+TELEGRAM_BOT_TOKEN=<token from @BotFather>
+TELEGRAM_CHAT_ID=<group ID, e.g. -100xxxxxxxxxx>
+TELEGRAM_PHOTO_INTERVAL_MINUTES=10   # photo sending interval (minutes)
 ```
 
-Lưu ý:
+Notes:
 
-- Bot phải được **thêm vào nhóm** trước.
-- Nếu nhóm được Telegram nâng cấp lên supergroup, chat ID sẽ đổi thành dạng
-  `-100...` — lấy ID mới qua `https://api.telegram.org/bot<TOKEN>/getUpdates`.
-- Video được chuyển sang H.264 trước khi gửi để phát trực tiếp được trong Telegram.
-- Nhiều hơn 10 camera: album ảnh tự chia thành nhiều đợt (giới hạn Telegram
-  10 ảnh/album).
+- The bot must be **added to the group** first.
+- If the group is upgraded by Telegram to a supergroup, the chat ID will
+  change to the `-100...` format — get the new ID via
+  `https://api.telegram.org/bot<TOKEN>/getUpdates`.
+- Videos are converted to H.264 before sending so they can be played
+  directly in Telegram.
+- More than 10 cameras: the photo album is automatically split into
+  multiple batches (Telegram's limit is 10 photos per album).
 
-## Phát hiện người & gửi video (YOLOv8n, chạy CPU)
+## Person detection & video sending (YOLOv8n, running on CPU)
 
-Không cần GPU. Mỗi camera có 1 luồng đọc bản rút gọn của video (fps thấp,
-mặc định 2 khung hình/giây) và chỉ chạy AI khi phát hiện có **chuyển động**
-(hoặc tối đa mỗi `PERSON_FORCE_CHECK_SECONDS` giây phải kiểm tra 1 lần dù
-không có chuyển động) — nhờ vậy máy gần như rảnh khi khung hình đứng yên,
-đỡ tốn CPU cho các việc khác đang chạy song song.
+No GPU required. Each camera has its own thread reading a downscaled
+version of the video (low fps, 2 frames per second by default) and only
+runs the AI when it detects **motion** (or at most once every
+`PERSON_FORCE_CHECK_SECONDS` seconds even without motion) — this keeps the
+machine nearly idle when the frame is static, saving CPU for other tasks
+running in parallel.
 
-Khi phát hiện người: ghi 1 đoạn clip `PERSON_FIRST_CLIP_SECONDS` giây (mặc
-định 20s) rồi gửi Telegram ngay. Nếu người vẫn còn trong khung hình, ghi nối
-tiếp đoạn `PERSON_CONTINUOUS_CLIP_SECONDS` giây (mặc định 60s, ~1 phút/lần)
-và cứ thế cho tới khi không còn thấy người trong `PERSON_GRACE_SECONDS` giây
-(mặc định 8s). Toàn bộ có thể chỉnh trong `.env`, xem `.env.example` để biết
-đầy đủ các biến (`PERSON_DETECT_MODEL`, `PERSON_DETECT_CONF`,
-`PERSON_DETECT_FPS`, `PERSON_MOTION_THRESHOLD`...). Đặt
-`PERSON_DETECT_ENABLED=false` để tắt hoàn toàn tính năng này.
+When a person is detected: it records a `PERSON_FIRST_CLIP_SECONDS`-second
+clip (20s by default) then sends it to Telegram immediately. If the person
+is still in frame, it keeps recording follow-up
+`PERSON_CONTINUOUS_CLIP_SECONDS`-second clips (60s by default, roughly once
+per minute) and continues until no person has been seen for
+`PERSON_GRACE_SECONDS` seconds (8s by default). All of this can be
+configured in `.env` — see `.env.example` for the full list of variables
+(`PERSON_DETECT_MODEL`, `PERSON_DETECT_CONF`, `PERSON_DETECT_FPS`,
+`PERSON_MOTION_THRESHOLD`, etc.). Set `PERSON_DETECT_ENABLED=false` to
+disable this feature entirely.
 
-## Kiểm tra camera bằng dòng lệnh
+## Testing a camera from the command line
 
 ```bash
-ffplay -rtsp_transport tcp "rtsp://admin:<MẬT_KHẨU>@<IP>:554/Streaming/Channels/101"
+ffplay -rtsp_transport tcp "rtsp://admin:<PASSWORD>@<IP>:554/Streaming/Channels/101"
 ```
 
-## Ghi chú
+## Note
 
-Các tính năng AI trước đây của repo này đã được gỡ bỏ — tóm tắt kỹ thuật đầy đủ
-nằm trong [AI_FEATURES_NOTES.txt](./AI_FEATURES_NOTES.txt).
+The AI features previously in this repo have been removed — the full
+technical summary is in
+[AI_FEATURES_NOTES.txt](./AI_FEATURES_NOTES.txt).

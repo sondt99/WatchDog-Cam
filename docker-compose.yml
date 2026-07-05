@@ -6,9 +6,9 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # .env mount vao container de sua cau hinh Telegram khong can build lai
+      # .env is mounted into the container so Telegram config can be changed without rebuilding
       - ./.env:/app/.env:ro
-      # du lieu ben vung (danh sach camera)
+      # persistent data (camera list)
       - ./data:/data
     environment:
       - TZ=Asia/Ho_Chi_Minh
