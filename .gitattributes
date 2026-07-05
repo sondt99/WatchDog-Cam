@@ -1,0 +1,3 @@
+# Batch files must be CRLF for cmd.exe; shell scripts must stay LF
+*.bat text eol=crlf
+*.sh  text eol=lf
