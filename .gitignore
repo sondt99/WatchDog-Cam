@@ -7,3 +7,4 @@ data/
 
 # Trang thai cuc bo cua Claude Code, khong lien quan code du an
 .claude/
+.venv/

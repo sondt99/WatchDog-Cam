@@ -12,3 +12,13 @@ services:
       - ./data:/data
     environment:
       - TZ=Asia/Ho_Chi_Minh
+      # GPU auto-detection: on a host where the NVIDIA runtime is Docker's
+      # default (one-time: nvidia-ctk runtime configure --runtime=docker
+      # --set-as-default), these two vars make the GPU visible to the app.
+      # On machines without an NVIDIA GPU/toolkit they are simply ignored -
+      # the same "docker compose up --build" works everywhere, and the app
+      # falls back to CPU detection automatically.
+      - NVIDIA_VISIBLE_DEVICES=all
+      # video: exposes NVDEC/NVENC so ffmpeg can decode camera streams and
+      # encode Telegram clips on the GPU's dedicated video engine
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility

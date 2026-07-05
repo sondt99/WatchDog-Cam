@@ -7,8 +7,8 @@ Adding a camera only requires entering the IP + password; by default it uses the
 Video is read by ffmpeg over RTSP/TCP and converted to MJPEG for direct viewing
 in the browser (no plugin needed, works even with H.265/HEVC cameras).
 
-Sends periodic photos + automatically sends video when a person is detected
-(YOLOv8n, CPU) to Telegram.
+Sends periodic photos + automatically sends an instant alert photo and video
+when a human is detected (YOLO11m on NVIDIA GPU, YOLOv8s on CPU) to Telegram.
 """
 
 import json
@@ -217,6 +217,49 @@ def _public_camera(cam):
 # ffmpeg: read RTSP -> MJPEG, share 1 process across multiple viewers
 # ---------------------------------------------------------------------------
 
+# NVDEC/NVENC (the GPU's dedicated video engine, separate silicon from the
+# CUDA cores YOLO uses): decode camera streams and encode Telegram clips in
+# hardware when available. Detected once; any worker that fails with hw
+# decode flips the flag off and everything transparently falls back to CPU.
+_hw_codec_lock = threading.Lock()
+_hw_codec_state = {"checked": False, "decode": False, "encode": False}
+
+
+def _hw_codec_available():
+    """(decode_ok, encode_ok) - whether ffmpeg has CUDA hwaccel + h264_nvenc
+    AND an NVIDIA device is actually visible in this container."""
+    with _hw_codec_lock:
+        if _hw_codec_state["checked"]:
+            return _hw_codec_state["decode"], _hw_codec_state["encode"]
+        decode = encode = False
+        if os.path.exists("/dev/nvidia0") or os.path.exists("/dev/nvidiactl"):
+            try:
+                out = subprocess.run(
+                    ["ffmpeg", "-hide_banner", "-hwaccels"],
+                    capture_output=True, timeout=10,
+                ).stdout.decode("utf-8", "replace")
+                decode = "cuda" in out.split()
+                out = subprocess.run(
+                    ["ffmpeg", "-hide_banner", "-encoders"],
+                    capture_output=True, timeout=10,
+                ).stdout.decode("utf-8", "replace")
+                encode = "h264_nvenc" in out
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        _hw_codec_state.update(checked=True, decode=decode, encode=encode)
+        if decode or encode:
+            log.info("ffmpeg NVIDIA video engine: decode(NVDEC)=%s encode(NVENC)=%s", decode, encode)
+        else:
+            log.info("ffmpeg NVIDIA video engine not available - using CPU codecs")
+        return decode, encode
+
+
+def _disable_hw_decode(reason):
+    with _hw_codec_lock:
+        if _hw_codec_state["decode"]:
+            _hw_codec_state["decode"] = False
+            log.warning("Disabling NVDEC decode (%s) - falling back to CPU decoding", reason)
+
 
 class StreamWorker:
     """One ffmpeg process reads 1 RTSP stream, broadcasts JPEG frames to each client."""
@@ -225,6 +268,7 @@ class StreamWorker:
         self.url = url
         self.max_width = max_width
         self.fps = fps
+        self.hw_decode = _hw_codec_available()[0]
         self.cond = threading.Condition()
         self.frame = None
         self.frame_id = 0
@@ -236,23 +280,42 @@ class StreamWorker:
         self.thread.start()
 
     def _build_cmd(self):
-        vf = f"fps={self.fps}"
-        if self.max_width:
-            vf += f",scale='min({self.max_width},iw)':-2"
         # Don't use -fflags nobuffer: with HEVC it makes ffmpeg decode mid-
         # GOP before the keyframe arrives -> a batch of gray frames on every new connection
-        return [
+        cmd = [
             "ffmpeg", "-nostdin", "-loglevel", "error",
             "-rtsp_transport", "tcp",
             # Shorten the probing time on each new connection (codec already known from SDP)
             "-probesize", "1000000",
             "-analyzeduration", "1000000",
+        ]
+        if self.hw_decode:
+            # Decode on the GPU's video engine; frames come back to system
+            # memory via hwdownload for the (CPU) mjpeg encoder.
+            cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+            vf = f"fps={self.fps}"
+            if self.max_width:
+                vf += f",scale_cuda='min({self.max_width},iw)':-2"
+            vf += ",hwdownload,format=nv12"
+        else:
+            # Cap decoder threads: ffmpeg defaults to one per CPU core, and a
+            # glitchy RTSP stream (packet loss) can send the HEVC decoder's
+            # error concealment spinning on ALL of them - observed eating 12
+            # cores for a single 768x432 sub stream. 2 threads decode these
+            # resolutions with plenty of headroom.
+            cmd += ["-threads", "2"]
+            vf = f"fps={self.fps}"
+            if self.max_width:
+                vf += f",scale='min({self.max_width},iw)':-2"
+        cmd += [
             "-i", self.url,
             "-an",
             "-vf", vf,
+            "-threads", "2",
             "-c:v", "mjpeg", "-q:v", JPEG_QUALITY,
             "-f", "mjpeg", "-",
         ]
+        return cmd
 
     def _run(self):
         try:
@@ -292,6 +355,12 @@ class StreamWorker:
                         self.last_frame_at = time.time()
                         self.cond.notify_all()
         finally:
+            # HW decode that dies without ever producing a frame = the CUDA
+            # pipeline doesn't work here (driver/session limit/unsupported
+            # codec). Flip the global flag so replacement workers (spawned by
+            # the client's reconnect) use CPU decoding instead.
+            if self.hw_decode and self.frame_id == 0 and self.running:
+                _disable_hw_decode("stream worker exited before first frame")
             self.running = False
             with self.cond:
                 self.cond.notify_all()
@@ -318,6 +387,55 @@ class StreamWorker:
 
 _workers = {}
 _workers_lock = threading.Lock()
+
+# Latest person-detection boxes per camera, written by the detection loop and
+# drawn onto the frames served to web viewers (grid thumbnail + fullscreen) so
+# the live view shows a bounding box in near real time without each viewer
+# running its own AI. The overlay happens at SERVING time (_mjpeg_stream), not
+# inside StreamWorker - the detection loop reads raw worker frames and must
+# never see its own boxes drawn back onto its input.
+_live_boxes = {}
+_live_boxes_lock = threading.Lock()
+LIVE_BOX_TTL_SECONDS = 2.5  # how long a box stays drawn after the last sighting
+
+
+def _set_live_boxes(cam_id, boxes, frame_w, frame_h):
+    with _live_boxes_lock:
+        _live_boxes[cam_id] = {"boxes": boxes, "w": frame_w, "h": frame_h, "at": time.time()}
+
+
+def _overlay_live_boxes(cam_id, frame_bytes):
+    """Draw the camera's latest (still-fresh) person boxes onto 1 JPEG frame.
+    Cheap no-op (just returns the frame untouched) whenever there's no recent
+    detection - which is the vast majority of the time - so normal live
+    viewing pays no extra CPU cost."""
+    if cam_id is None:
+        return frame_bytes
+    with _live_boxes_lock:
+        info = _live_boxes.get(cam_id)
+    if not info or (time.time() - info["at"]) > LIVE_BOX_TTL_SECONDS:
+        return frame_bytes
+    try:
+        arr = np.frombuffer(frame_bytes, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            return frame_bytes
+        h, w = img.shape[:2]
+        sx, sy = w / info["w"], h / info["h"]
+        for x1, y1, x2, y2 in info["boxes"]:
+            p1 = (int(x1 * sx), int(y1 * sy))
+            p2 = (int(x2 * sx), int(y2 * sy))
+            cv2.rectangle(img, p1, p2, (0, 0, 255), 2)
+            cv2.putText(
+                img, "Human", (p1[0], max(14, p1[1] - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA,
+            )
+        # Note: cv2's JPEG_QUALITY is 0(worst)-100(best) - the opposite scale
+        # from ffmpeg's -q:v (JPEG_QUALITY constant above), so it's not reused here.
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        return buf.tobytes() if ok else frame_bytes
+    except Exception:
+        return frame_bytes
 
 
 def _acquire_worker(cam, src, fps=STREAM_FPS):
@@ -368,6 +486,7 @@ def _mjpeg_stream(cam, src, fps=STREAM_FPS):
                 if worker.frame_id == last_id or frame is None:
                     break  # too long without a new frame -> disconnect so the client reconnects
                 last_id = worker.frame_id
+            frame = _overlay_live_boxes(cam["id"], frame)
             yield (
                 b"--frame\r\n"
                 b"Content-Type: image/jpeg\r\n"
@@ -572,38 +691,73 @@ def _ensure_all_topics():
         _camera_topic_thread_id(settings, cam)
 
 
+def _record_clip_cmd(cam, seconds, src, path, hw):
+    cmd = [
+        "ffmpeg", "-y", "-nostdin", "-loglevel", "error",
+        "-rtsp_transport", "tcp",
+        # Without this, ffmpeg defaults to ~5s of stream analysis before it
+        # starts writing output - by then a person walking through the frame
+        # is often already gone. The codec is already known (we just probed
+        # it / are already streaming it), so probe fast instead.
+        "-probesize", "500000",
+        "-analyzeduration", "500000",
+        # EZVIZ cameras timestamp video/audio streams hours apart ->
+        # without this flag, -t would cut out all the audio
+        "-use_wallclock_as_timestamps", "1",
+    ]
+    if hw:
+        # Decode AND encode on the GPU's video engine (NVDEC -> NVENC): the
+        # whole recording costs almost no CPU and no CUDA (YOLO) time.
+        cmd += [
+            "-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
+            "-i", _rtsp_url(cam, src),
+            "-t", str(seconds),
+            "-vf", "scale_cuda='min(1280,iw)':-2",
+            "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "26", "-b:v", "0",
+        ]
+    else:
+        cmd += [
+            "-i", _rtsp_url(cam, src),
+            "-t", str(seconds),
+            "-vf", "scale='min(1280,iw)':-2",
+            # Force H.264 because Telegram/browsers can't play HEVC directly.
+            # Cap encoder threads so a recording never starves the live streams.
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-threads", "4",
+        ]
+    cmd += [
+        "-c:a", "aac", "-b:a", "64k",
+        "-movflags", "+faststart",
+        path,
+    ]
+    return cmd
+
+
 def _record_clip(cam, seconds, src="sub"):
     """Record a short video clip from the camera, return the mp4 (H.264) file path.
 
     Records from the sub stream by default: ~6x lighter on bandwidth than the
     main stream, good enough for viewing on a phone. Set TELEGRAM_VIDEO_SOURCE=main
-    if you need higher resolution.
+    if you need higher resolution. Uses NVDEC+NVENC when available; a failed
+    hardware attempt is retried once on CPU.
     """
     fd, path = tempfile.mkstemp(suffix=".mp4", prefix="camera_hub_")
     os.close(fd)
-    cmd = [
-        "ffmpeg", "-y", "-nostdin", "-loglevel", "error",
-        "-rtsp_transport", "tcp",
-        # EZVIZ cameras timestamp video/audio streams hours apart ->
-        # without this flag, -t would cut out all the audio
-        "-use_wallclock_as_timestamps", "1",
-        "-i", _rtsp_url(cam, src),
-        "-t", str(seconds),
-        "-vf", "scale='min(1280,iw)':-2",
-        # Force H.264 because Telegram/browsers can't play HEVC directly
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
-        "-c:a", "aac", "-b:a", "64k",
-        "-movflags", "+faststart",
-        path,
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, timeout=seconds + 60)
-        if result.returncode == 0 and os.path.getsize(path) > 0:
-            return path
-        err = (result.stderr or b"").decode("utf-8", "replace").strip()
-        log.warning("Failed to record clip for camera %s: %s", cam["name"], err.splitlines()[-1] if err else "?")
-    except subprocess.TimeoutExpired:
-        log.warning("Recording clip for camera %s timed out", cam["name"])
+    decode_ok, encode_ok = _hw_codec_available()
+    attempts = [True, False] if (decode_ok and encode_ok) else [False]
+    for hw in attempts:
+        cmd = _record_clip_cmd(cam, seconds, src, path, hw)
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=seconds + 60)
+            if result.returncode == 0 and os.path.getsize(path) > 0:
+                return path
+            err = (result.stderr or b"").decode("utf-8", "replace").strip()
+            log.warning(
+                "Failed to record clip for camera %s (%s): %s",
+                cam["name"], "nvenc" if hw else "cpu", err.splitlines()[-1] if err else "?",
+            )
+        except subprocess.TimeoutExpired:
+            log.warning("Recording clip for camera %s timed out", cam["name"])
+            break  # camera unreachable - a CPU retry would waste another N seconds
     try:
         os.remove(path)
     except OSError:
@@ -714,7 +868,7 @@ def _send_person_clip(settings, cam, clip_path, seconds):
         with open(clip_path, "rb") as f:
             data_form = {
                 "chat_id": settings["chat_id"],
-                "caption": f"\U0001F6A8 Person detected • {cam['name']} • {stamp} ({seconds}s)",
+                "caption": f"\U0001F6A8 Human detected • {cam['name']} • {stamp} ({seconds}s)",
                 "supports_streaming": "true",
             }
             thread_id = _camera_topic_thread_id(settings, cam)
@@ -733,6 +887,31 @@ def _send_person_clip(settings, cam, clip_path, seconds):
             os.remove(clip_path)
         except OSError:
             pass
+
+
+def _send_person_alert_photo(settings, cam, preview_jpeg):
+    """Send an instant photo (with the AI's bounding box drawn on it) the
+    moment a person is confirmed - the clip itself takes 20s+ to record and
+    upload, so this gives an immediate alert and lets you check at a glance
+    whether the detection was real."""
+    if not preview_jpeg:
+        return
+    stamp = time.strftime("%d/%m/%Y %H:%M:%S")
+    try:
+        data_form = {
+            "chat_id": settings["chat_id"],
+            "caption": f"\U0001F6A8 Human detected • {cam['name']} • {stamp}",
+        }
+        thread_id = _camera_topic_thread_id(settings, cam)
+        if thread_id:
+            data_form["message_thread_id"] = thread_id
+        _tg_send(
+            settings, "sendPhoto", data_form,
+            files={"photo": (f"{cam['host']}_alert.jpg", preview_jpeg, "image/jpeg")},
+        )
+        log.info("Telegram [person]: sent instant alert photo for camera %s", cam["name"])
+    except Exception as exc:
+        log.warning("Telegram: error sending instant alert photo for camera %s: %s", cam["name"], exc)
 
 
 def _run_periodic(kind, batch_fn, interval_key, first_delay):
@@ -770,7 +949,7 @@ def _start_telegram_workers():
 
 
 # ---------------------------------------------------------------------------
-# Person detection (YOLOv8n, CPU) -> record clip -> send to Telegram
+# Person detection (YOLOv8s, CPU) -> record clip -> send to Telegram
 #
 # Each camera has 2 threads:
 #  - _detection_loop: reads the sub stream at a low fps, only runs YOLO when
@@ -785,6 +964,26 @@ def _start_telegram_workers():
 
 _yolo_model = None
 _yolo_lock = threading.Lock()
+_detect_device = None
+
+
+def _resolve_detect_device():
+    """cuda when an NVIDIA GPU is visible, otherwise cpu. Resolved once and
+    cached - this is called from the per-frame settings read."""
+    global _detect_device
+    if _detect_device is None:
+        pref = _env("PERSON_DETECT_DEVICE", "auto").strip().lower()
+        if pref in ("cuda", "gpu"):
+            _detect_device = "cuda"
+        elif pref == "cpu":
+            _detect_device = "cpu"
+        else:
+            try:
+                import torch
+                _detect_device = "cuda" if torch.cuda.is_available() else "cpu"
+            except Exception:
+                _detect_device = "cpu"
+    return _detect_device
 
 
 def _person_detect_settings():
@@ -795,16 +994,43 @@ def _person_detect_settings():
             return default
 
     enabled_raw = _env("PERSON_DETECT_ENABLED", "1").strip().lower()
+    device = _resolve_detect_device()
+    # GPU: YOLO11m - a generation newer and much stronger than YOLOv8s, and
+    # at ~10ms/frame on the GPU its extra weight costs nothing. CPU fallback:
+    # yolov8s - measured on a real frame of this system's restaurant camera
+    # (6 seated people, high angle, sub stream), yolov8n topped out at conf
+    # 0.42-0.53 - below any sane threshold - while yolov8s@640 gave 0.65-0.71
+    # on the same people at ~108ms/check on CPU.
+    default_model = "yolo11m.pt" if device == "cuda" else "yolov8s.pt"
     return {
         "enabled": enabled_raw not in ("0", "false", "no", "off"),
-        "model": _env("PERSON_DETECT_MODEL", "yolov8n.pt").strip() or "yolov8n.pt",
-        "conf": max(0.05, min(0.95, _num("PERSON_DETECT_CONF", 0.5, float))),
-        "fps": max(1, min(5, _num("PERSON_DETECT_FPS", 2, int))),
+        "device": device,
+        "model": _env("PERSON_DETECT_MODEL", default_model).strip() or default_model,
+        # 0.35: the persons that matter score well above this, while vehicle
+        # misdetections are handled by min_dwell_seconds (a passing car
+        # doesn't stay in frame long enough) rather than by a high
+        # confidence bar that also cuts off real people.
+        "conf": max(0.05, min(0.95, _num("PERSON_DETECT_CONF", 0.35, float))),
+        # 640 (was hardcoded 320): needed for small/far/partially-occluded
+        # people on the 768x432 sub stream.
+        "imgsz": max(320, min(960, _num("PERSON_DETECT_IMGSZ", 640, int))),
+        # GPU: match STREAM_FPS so the detection loop SHARES one ffmpeg
+        # worker with the web grid viewer (worker key includes fps) - one
+        # NVDEC session and one decode per camera instead of two, and the
+        # live bounding box updates at full stream rate.
+        "fps": max(1, min(15, _num("PERSON_DETECT_FPS", STREAM_FPS if device == "cuda" else 2, int))),
         "first_clip_seconds": max(3, _num("PERSON_FIRST_CLIP_SECONDS", 20, int)),
         "continuous_clip_seconds": max(10, _num("PERSON_CONTINUOUS_CLIP_SECONDS", 60, int)),
         "grace_seconds": max(2.0, _num("PERSON_GRACE_SECONDS", 8.0, float)),
         "motion_threshold": max(0.1, _num("PERSON_MOTION_THRESHOLD", 1.5, float)),
         "force_check_seconds": max(1.0, _num("PERSON_FORCE_CHECK_SECONDS", 5.0, float)),
+        # A human must be in frame for at least this long for the recorded
+        # VIDEO to be sent - filters out anything that only flickers through
+        # for a moment (a passing car/motorbike, a one-off misdetection).
+        # Recording starts immediately on first sighting (so nothing is
+        # missed) and the alert photo also goes out immediately; only the
+        # decision to send vs discard the clip waits for this dwell.
+        "min_dwell_seconds": max(0.0, _num("PERSON_MIN_DWELL_SECONDS", 4.0, float)),
     }
 
 
@@ -820,35 +1046,96 @@ def _get_yolo_model(model_name):
                 # Store it in DATA_DIR (persistent directory) so it isn't re-downloaded
                 # from the network every time the container restarts
                 weight_path = os.path.join(DATA_DIR, model_name)
-            log.info("Loading person-detection model: %s", weight_path)
+            log.info("Loading person-detection model: %s (device: %s)", weight_path, _resolve_detect_device())
             _yolo_model = YOLO(weight_path)
         return _yolo_model
 
 
-def _detect_person(model, frame_bgr, conf):
+def _detect_person(model, frame_bgr, conf, imgsz, device="cpu"):
+    """Run YOLO on 1 frame. Returns (found, annotated_jpeg_bytes, boxes) -
+    the annotated frame (boxes + confidence drawn on top) is only built when
+    a person is found, so it can be sent to Telegram as visual proof of what
+    triggered the alert; boxes (list of x1,y1,x2,y2 in frame_bgr's pixel
+    coordinates) are used to draw a live bounding box on the web viewer."""
     with _yolo_lock:
         results = model.predict(
-            frame_bgr, imgsz=320, conf=conf, classes=[0],
-            verbose=False, device="cpu",
+            frame_bgr, imgsz=imgsz, conf=conf, classes=[0],
+            verbose=False, device=device,
+            # FP16 on GPU: ~2x faster on tensor cores, no practical accuracy
+            # loss for detection
+            half=(device == "cuda"),
         )
-    return bool(results and len(results[0].boxes) > 0)
+    if not results or len(results[0].boxes) == 0:
+        return False, None, None
+    boxes = [tuple(b) for b in results[0].boxes.xyxy.tolist()]
+    # Annotate by hand instead of results.plot(): plot() labels boxes with the
+    # model's class name ("person") while the whole UI calls them "Human".
+    annotated = frame_bgr.copy()
+    for (x1, y1, x2, y2), c in zip(boxes, results[0].boxes.conf.tolist()):
+        p1, p2 = (int(x1), int(y1)), (int(x2), int(y2))
+        cv2.rectangle(annotated, p1, p2, (0, 0, 255), 2)
+        cv2.putText(
+            annotated, f"Human {c:.2f}", (p1[0], max(16, p1[1] - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2, cv2.LINE_AA,
+        )
+    ok, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return True, (buf.tobytes() if ok else None), boxes
 
 
 class _PersonState:
-    """The most recent time a person was detected for 1 camera - read/written from 2
-    different threads (detection & recorder) so it needs a lock."""
+    """Tracks human sightings for 1 camera - read/written from 2 different
+    threads (detection & recorder) so it needs a lock.
+
+    A "visit" is an unbroken run of sightings (gaps no longer than
+    grace_seconds apart). On the FIRST sighting of a visit: the alert photo
+    is sent immediately and recording starts immediately. The recorded VIDEO
+    however is only sent if the visit ends up lasting at least
+    min_dwell_seconds - so a car/motorbike flickering through the frame gets
+    its clip silently discarded, while someone actually sticking around gets
+    footage from the very first second.
+    """
 
     def __init__(self):
         self.lock = threading.Lock()
         self.last_seen = 0.0
+        self.first_seen = 0.0
+        self.preview = None
+        self._photo_sent = False
 
-    def mark_seen(self):
+    def mark_seen(self, preview, grace_seconds):
         with self.lock:
-            self.last_seen = time.time()
+            now = time.time()
+            if now - self.last_seen > grace_seconds:
+                # Previous visit (if any) is over - this one starts a fresh dwell timer.
+                self.first_seen = now
+                self._photo_sent = False
+            self.last_seen = now
+            if preview is not None:
+                self.preview = preview
+
+    def get_preview(self):
+        with self.lock:
+            return self.preview
 
     def recently_seen(self, within_seconds):
         with self.lock:
             return (time.time() - self.last_seen) < within_seconds
+
+    def dwell_ok(self, min_dwell_seconds):
+        """True once the current visit has lasted at least min_dwell_seconds."""
+        with self.lock:
+            if self.last_seen == 0.0:
+                return False
+            return (self.last_seen - self.first_seen) >= min_dwell_seconds
+
+    def consume_photo_alert(self):
+        """True exactly once per visit - on the FIRST sighting, so the alert
+        photo goes out with zero delay."""
+        with self.lock:
+            if self._photo_sent:
+                return False
+            self._photo_sent = True
+            return True
 
 
 _person_states = {}
@@ -917,12 +1204,32 @@ def _detection_loop(cam_id, stop_event):
                     motion = changed_pct > settings["motion_threshold"]
                 prev_small = small
                 forced = (now - last_checked) >= settings["force_check_seconds"]
-                if not (motion or forced):
+                # While someone is (or was moments ago) in frame, keep
+                # checking every frame even without motion: people sitting
+                # still generate no motion, and without this they'd only be
+                # re-checked every force_check_seconds - making the live
+                # bounding box flicker and dwell tracking miss them.
+                tracking = state.recently_seen(settings["grace_seconds"])
+                if not (motion or forced or tracking):
                     continue
                 last_checked = now
                 try:
-                    if _detect_person(model, frame, settings["conf"]):
-                        state.mark_seen()
+                    found, preview, boxes = _detect_person(
+                        model, frame, settings["conf"], settings["imgsz"], settings["device"])
+                    if found:
+                        _set_live_boxes(cam_id, boxes, frame.shape[1], frame.shape[0])
+                        state.mark_seen(preview, settings["grace_seconds"])
+                        # Alert photo goes out IMMEDIATELY on the first sighting
+                        # of a visit (no dwell wait) - the recipient can judge
+                        # the annotated photo at a glance. Only the video send
+                        # is dwell-filtered (see _recorder_loop).
+                        if state.consume_photo_alert():
+                            tg = _telegram_settings()
+                            if tg["enabled"]:
+                                threading.Thread(
+                                    target=_send_person_alert_photo,
+                                    args=(tg, cam, state.get_preview()), daemon=True,
+                                ).start()
                 except Exception as exc:
                     log.warning("Error running person-detection AI for camera %s: %s", cam["name"], exc)
         finally:
@@ -937,11 +1244,15 @@ def _detection_loop(cam_id, stop_event):
 def _recorder_loop(cam_id, stop_event):
     state = _get_person_state(cam_id)
     while not stop_event.is_set():
-        if not state.recently_seen(1.0):
-            time.sleep(0.5)
-            continue
-        # Person just detected -> start a recording session, first segment 20s
         settings = _person_detect_settings()
+        if not state.recently_seen(1.0):
+            time.sleep(0.2)
+            continue
+        # Human just seen -> start recording IMMEDIATELY so the clip catches
+        # them from the first second. Whether the clip is worth SENDING is
+        # decided after it's recorded: only if the visit lasted at least
+        # min_dwell_seconds. A car/motorbike passing through in 1-2s still
+        # triggers a recording, but that clip is silently discarded.
         duration = settings["first_clip_seconds"]
         while not stop_event.is_set():
             cam = _get_camera(cam_id)
@@ -949,9 +1260,19 @@ def _recorder_loop(cam_id, stop_event):
             if cam is None or not tg["enabled"]:
                 break
             clip = _record_clip(cam, duration, tg["video_source"])
-            if clip:
-                _send_person_clip(tg, cam, clip, duration)
             settings = _person_detect_settings()
+            if clip:
+                if state.dwell_ok(settings["min_dwell_seconds"]):
+                    _send_person_clip(tg, cam, clip, duration)
+                else:
+                    try:
+                        os.remove(clip)
+                    except OSError:
+                        pass
+                    log.info(
+                        "Clip for camera %s discarded - human left before %.0fs dwell",
+                        cam["name"], settings["min_dwell_seconds"],
+                    )
             if state.recently_seen(settings["grace_seconds"]):
                 duration = settings["continuous_clip_seconds"]
                 continue

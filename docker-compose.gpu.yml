@@ -1,0 +1,14 @@
+# OPTIONAL GPU override - only needed on hosts that installed
+# nvidia-container-toolkit WITHOUT setting it as Docker's default runtime
+# (with --set-as-default, the plain "docker compose up --build" already uses
+# the GPU and this file is unnecessary):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+services:
+  camera-hub:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
